@@ -4,7 +4,7 @@
     "moduleResolution": "nodenext",
     "target": "es2022",
     "lib": ["es2023"],
-    "types": ["node"],
+    "types": ["node", "vitest/globals"],
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

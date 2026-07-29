@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npx tsc -p tsconfig.json --noEmit
+      - run: npm test
+      - run: npm run build
+      # The package ships dist/ only. If the built entrypoint cannot start,
+      # every `npx @meetergo/mcp-server` in the wild is broken and the tests
+      # would not have noticed — they exercise src, not what we publish.
+      - name: Smoke-test the built server
+        run: |
+          node --input-type=module -e "
+          import { spawn } from 'node:child_process'
+          const p = spawn('node', ['dist/index.js'], {
+            env: { ...process.env, MEETERGO_TOKEN: 'ci-smoke-test' },
+            stdio: ['pipe', 'pipe', 'inherit'],
+          })
+          p.stdin.write(JSON.stringify({
+            jsonrpc: '2.0', id: 1, method: 'initialize',
+            params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'ci', version: '0' } },
+          }) + '\n')
+          let buf = ''
+          const timer = setTimeout(() => { console.error('no response in 10s'); process.exit(1) }, 10000)
+          p.stdout.on('data', (d) => {
+            buf += d
+            for (const line of buf.split('\n').filter(Boolean)) {
+              let msg; try { msg = JSON.parse(line) } catch { continue }
+              if (msg.id !== 1) continue
+              clearTimeout(timer)
+              const v = msg.result?.serverInfo?.version
+              console.log('handshake ok, version', v)
+              p.kill()
+              process.exit(v ? 0 : 1)
+            }
+          })
+          "
