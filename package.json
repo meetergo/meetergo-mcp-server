@@ -17,7 +17,7 @@
   "homepage": "https://meetergo.com/mcp",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DominikRapacki/meetergo-mcp-server.git"
+    "url": "git+https://github.com/meetergo/meetergo-mcp-server.git"
   },
   "engines": {
     "node": ">=20"
@@ -34,7 +34,7 @@
     "zod": "^3.25.76"
   },
   "bugs": {
-    "url": "https://github.com/DominikRapacki/meetergo-mcp-server/issues"
+    "url": "https://github.com/meetergo/meetergo-mcp-server/issues"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
