@@ -1,6 +1,6 @@
 {
   "name": "@meetergo/mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "meetergo MCP server — let AI agents book, reschedule and cancel meetings",
   "license": "MIT",
   "type": "module",

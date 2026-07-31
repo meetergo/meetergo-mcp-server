@@ -7,12 +7,24 @@ import { TOOLS } from '../tools.js'
  * auto-run without asking a human — that is worth a failing test.
  */
 describe('meetergo MCP tool surface', () => {
-  it('exposes a curated surface, not the whole API', () => {
-    // 100 operations exist. This ceiling is deliberate: tool definitions cost
-    // context, and selection accuracy falls as the list grows. Raising it
-    // should be a decision, not a drift.
-    expect(TOOLS).toHaveLength(17)
+  it('covers the API surface an agent needs, with no duplicate names', () => {
+    expect(TOOLS).toHaveLength(40)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
+  })
+
+  it('leads with the scheduling loop', () => {
+    // Tool order is a weak prior for selection. The common path should be the
+    // first thing a model reads, not buried under CRM and webhook config.
+    expect(TOOLS.slice(0, 8).map((t) => t.name)).toEqual([
+      'get_me',
+      'list_meeting_types',
+      'get_availability',
+      'book_appointment',
+      'reschedule_appointment',
+      'cancel_appointment',
+      'list_appointments',
+      'get_todays_appointments',
+    ])
   })
 
   it('covers the full loop an agent needs to run a calendar', () => {
@@ -36,22 +48,56 @@ describe('meetergo MCP tool surface', () => {
       .map((t) => t.name)
       .sort()
     // Hosts gate confirmation on readOnlyHint. Mislabelling a write as a read
-    // means an agent books or cancels without anyone being asked.
+    // means an agent books, cancels or deletes without anyone being asked.
     expect(writes).toEqual([
       'add_guest',
       'book_appointment',
+      'bulk_create_contacts',
       'cancel_appointment',
       'create_contact',
+      'create_data_field',
+      'create_meeting_type',
       'create_one_time_booking_link',
+      'create_routing_form',
+      'create_webhook',
+      'delete_contact',
+      'delete_meeting_type',
+      'delete_routing_form',
+      'delete_webhook',
       'reschedule_appointment',
+      'send_quick_email',
+      'send_routing_form',
       'update_appointment_notes',
       'update_contact',
+      'update_meeting_transcription',
+      'update_meeting_type',
+      'update_personal_page',
+      'update_routing_form',
+      'update_webhook',
     ])
   })
 
-  it('marks only irreversible tools destructive', () => {
-    const destructive = TOOLS.filter((t) => t.destructive).map((t) => t.name)
-    expect(destructive).toEqual(['cancel_appointment'])
+  it('marks every irreversible tool destructive', () => {
+    const destructive = TOOLS.filter((t) => t.destructive)
+      .map((t) => t.name)
+      .sort()
+    // Everything that removes something a human would miss. A delete that is
+    // not flagged is a delete a host will let an agent do unattended.
+    expect(destructive).toEqual([
+      'cancel_appointment',
+      'delete_contact',
+      'delete_meeting_type',
+      'delete_routing_form',
+      'delete_webhook',
+      // Not a delete, but its qualifier sync removes whatever you leave out.
+      'update_routing_form',
+    ])
+  })
+
+  it('never marks a read as destructive', () => {
+    for (const tool of TOOLS.filter((t) => t.readOnly)) {
+      expect(tool.destructive).toBeFalsy()
+    }
   })
 
   it('gives every tool a description an agent can choose on', () => {
@@ -62,15 +108,28 @@ describe('meetergo MCP tool surface', () => {
   })
 
   it('requires an identifier on every tool that changes an existing record', () => {
-    const creates = new Set(['create_contact'])
-    for (const tool of TOOLS.filter((t) => !t.readOnly && !creates.has(t.name))) {
+    // Creates take no id by definition; everything else must name its target,
+    // or an agent can fire it with no arguments and hit something arbitrary.
+    const isCreate = (n: string) =>
+      n.startsWith('create_') || n === 'bulk_create_contacts'
+    const targets = [
+      'appointmentId',
+      'meetingTypeId',
+      'contactId',
+      'formId',
+      'webhookId',
+      'attendeeId',
+    ]
+    const exempt = new Set(['update_personal_page']) // the caller's own page
+
+    for (const tool of TOOLS.filter(
+      (t) => !t.readOnly && !isCreate(t.name) && !exempt.has(t.name),
+    )) {
       const keys = Object.keys(tool.schema)
-      expect(keys.length).toBeGreaterThan(0)
-      // Nothing that edits an existing thing should be callable with no target.
+      expect(keys.length, `${tool.name} takes no arguments`).toBeGreaterThan(0)
       expect(
-        keys.some(
-          (k) => k === 'appointmentId' || k === 'meetingTypeId' || k === 'contactId',
-        ),
+        keys.some((k) => targets.includes(k)),
+        `${tool.name} names no target`,
       ).toBe(true)
     }
   })
@@ -337,6 +396,108 @@ describe('wire format', () => {
       /email or phoneNumber/,
     )
     expect(calls).toHaveLength(0)
+  })
+
+  it('routes webhooks to the host root, like the CRM', async () => {
+    // /webhooks lives on the user module at the root, not under /v4.
+    for (const [name, args] of [
+      ['list_webhooks', {}],
+      ['create_webhook', { endpoint: 'https://x.test', eventTypes: ['booking_created'] }],
+      ['update_webhook', { webhookId: 'w-1', description: 'x' }],
+      ['delete_webhook', { webhookId: 'w-1' }],
+      ['bulk_create_contacts', { contacts: [{ email: 'a@example.com' }] }],
+      ['delete_contact', { contactId: 'c-1' }],
+    ] as const) {
+      const call = await callTool(name, args)
+      expect(call.options.root, `${name} must target the host root`).toBe(true)
+    }
+  })
+
+  it('nests meetingInfo and sends nothing the API would strip', async () => {
+    // Both meeting-type routes validate with whitelist: true, so any property
+    // without a class-validator decorator is silently discarded. Sending one
+    // would make the tool claim a setting it did not apply.
+    const call = await callTool('create_meeting_type', {
+      name: 'Discovery call',
+      description: 'A first chat',
+      duration: 30,
+      channel: 'zoom',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/meeting-type' })
+    const body = call.options.body as { meetingInfo: Record<string, unknown> }
+    expect(body.meetingInfo).toEqual({
+      name: 'Discovery call',
+      description: 'A first chat',
+      duration: 30,
+      channel: 'zoom',
+    })
+  })
+
+  it('does not offer meeting-type fields the API discards', async () => {
+    // Each of these is undecorated on the create DTO, so the request succeeds
+    // and the value vanishes. Better to not accept it at all.
+    const create = TOOLS.find((t) => t.name === 'create_meeting_type')!
+    for (const stripped of [
+      'slug',
+      'userId',
+      'groupBooking',
+      'customChannelLink',
+      'confirmationButton',
+      'advanced',
+    ]) {
+      expect(Object.keys(create.schema)).not.toContain(stripped)
+    }
+    // slug IS validated on the update DTO, so it belongs there.
+    const update = TOOLS.find((t) => t.name === 'update_meeting_type')!
+    expect(Object.keys(update.schema)).toContain('slug')
+  })
+
+  it('never sends create-time defaults on an update', async () => {
+    // UpdateMeetingInfoDto is fully partial, so the create defaults would blank
+    // a custom channel on any unrelated edit.
+    const call = await callTool('update_meeting_type', {
+      meetingTypeId: 'mt-1',
+      duration: 45,
+    })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/meeting-type/mt-1' })
+    const body = call.options.body as { meetingInfo: Record<string, unknown> }
+    expect(body.meetingInfo).toEqual({ duration: 45 })
+    for (const blanked of [
+      'customChannelName',
+      'customChannelLink',
+      'connectChannelName',
+      'confirmationButton',
+    ]) {
+      expect(body.meetingInfo).not.toHaveProperty(blanked)
+    }
+  })
+
+  it('omits meetingInfo entirely when only the slug changes', async () => {
+    const call = await callTool('update_meeting_type', {
+      meetingTypeId: 'mt-1',
+      slug: 'new-slug',
+    })
+    expect(call.options.body).not.toHaveProperty('meetingInfo')
+    expect(call.options.body).toMatchObject({ slug: 'new-slug' })
+  })
+
+  it('sends transcription and quick mail to their own routes', async () => {
+    const transcript = await callTool('update_meeting_transcription', {
+      appointmentId: 'ap-1',
+      summary: '# Notes',
+    })
+    expect(transcript).toMatchObject({
+      method: 'PATCH',
+      path: '/appointment/ap-1/transcription',
+      options: { body: { summary: '# Notes' } },
+    })
+
+    const mail = await callTool('send_quick_email', {
+      attendeeId: 'at-1',
+      title: 'Prep',
+      content: 'See you then',
+    })
+    expect(mail).toMatchObject({ method: 'POST', path: '/attendee/quick-mail' })
   })
 
   it('refuses a contact lookup with no identifier', async () => {

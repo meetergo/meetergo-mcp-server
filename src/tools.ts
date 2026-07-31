@@ -2,21 +2,24 @@ import { z } from 'zod'
 import type { MeetergoClient } from './client.js'
 
 /**
- * The agent-facing tool surface.
+ * The agent-facing tool surface: everything an agent needs to run scheduling
+ * end to end, without reaching for raw REST.
  *
- * The OpenAPI spec has 100 operations. Exposing all of them would be the
- * obvious move and the wrong one: every tool definition costs context in the
- * model's window, and an agent choosing between 100 near-identical operations
- * picks worse than one choosing between fifteen. These fifteen are the loops
- * that make the claim "an agent runs your calendar" true — discover, schedule,
- * change, review, follow up, and keep the contact record straight.
+ * Grouped below as scheduling, appointments, follow-up, meeting types, booking
+ * page, routing forms, CRM, webhooks, calendars. The scheduling loop comes
+ * first on purpose — tool order is a weak prior for selection, and the common
+ * path should be the first thing a model reads.
  *
- * The bar for adding a tool is that it closes a loop an agent can actually
- * complete on its own. Config surfaces that would have the agent inventing a
- * large request body from a docstring (meeting-type creation, routing-form
- * definitions, page branding) stay out: they are better done in the dashboard,
- * and a mistyped `dict` payload is worse than no tool. Everything outside this
- * list is still reachable over REST.
+ * Two rules hold across all of them, both learned the expensive way:
+ *
+ *   1. Every request shape is pinned against a route in `apps/api` and covered
+ *      by a test that asserts the wire format. 0.1.x shipped five tools that
+ *      could never succeed while every test passed, because the tests only
+ *      checked that the tools existed.
+ *   2. Where the API requires boilerplate the model cannot know (a nested
+ *      `attendee`, `receiveReminders`, an empty `confirmationButton`), the tool
+ *      fills it in. Making a model invent a large request body from a prose
+ *      description is how you get confidently malformed payloads.
  */
 
 export interface ToolDefinition {
@@ -45,6 +48,153 @@ interface MeetingTypeScope {
   id: string
   userId?: string
   queueId?: string
+}
+
+/** Form field types. Note the single/multi split — a bare "text" is rejected. */
+const DATA_FIELD_TYPES = [
+  'text-single',
+  'text-multi',
+  'email',
+  'phone',
+  'number',
+  'select',
+  'checkbox-single',
+  'checkbox-multi',
+  'radio',
+  'slide',
+  'url',
+  'file',
+  'date',
+  'date-of-birth',
+  'time',
+  'yes-no',
+  'rating',
+  'scale',
+  'signature',
+] as const
+
+/** Every event the API will accept on a webhook subscription. */
+const WEBHOOK_EVENTS = [
+  'booking_created',
+  'booking_rescheduled',
+  'booking_cancelled',
+  'form_submission',
+  'new_employee',
+  'credential_error',
+  'review_submitted',
+  'review_published',
+  'signature_completed',
+] as const
+
+/** Current channels. The enum also carries deprecated Skype/Teams v1 values. */
+const MEETING_CHANNELS = [
+  'local',
+  'local-attendee',
+  'google',
+  'zoom',
+  'phone',
+  'phone-incoming',
+  'whatsapp',
+  'connect',
+  'webex',
+  'teamsForBusiness2',
+  'teams2ForExchange',
+  'custom',
+  'resource',
+  'whereby',
+  'kmeet',
+  'jitsi',
+  'nextcloudTalk',
+  'openTalk',
+] as const
+
+/**
+ * Only fields the API actually keeps.
+ *
+ * Both meeting-type routes validate with `whitelist: true`, which silently
+ * drops any property without a class-validator decorator — and six `MeetingInfo`
+ * properties have none (`customChannelName`, `customChannelLink`,
+ * `connectChannelName`, `groupBooking`, `enrichInvitee`, `confirmationButton`),
+ * as do `slug` and `userId` on the create DTO. Offering them here would be a
+ * lie: the request succeeds, the setting is discarded, and nobody finds out
+ * until someone opens the booking page. They are configured in the dashboard.
+ *
+ * `description` is required on create — it carries `@IsString()` with no
+ * `@IsOptional()` — which is why it is not optional below.
+ */
+const meetingInfoShape = {
+  name: z.string().describe('Shown on the booking page'),
+  description: z.string().describe('Shown on the booking page. Pass "" for none.'),
+  duration: z
+    .number()
+    .int()
+    .min(5)
+    .max(480)
+    .describe('Minutes, 5 to 480'),
+  channel: z
+    .enum(MEETING_CHANNELS)
+    .describe('Where the meeting happens. "local" is at the host address.'),
+  bufferBefore: z.number().int().min(0).max(120).optional().describe('Minutes, max 120'),
+  bufferAfter: z.number().int().min(0).max(120).optional().describe('Minutes, max 120'),
+  bufferMustStayWithinWorkingHours: z.boolean().optional(),
+  showAvailableSlots: z.boolean().optional(),
+  enableRedirect: z.boolean().optional(),
+  redirect: z.string().optional().describe('URL to send attendees to after booking'),
+  passEventDetailsToRedirect: z.boolean().optional(),
+  color: z.string().optional().describe('Hex, e.g. #e55000'),
+}
+
+/**
+ * A webhook target the API will POST to on every matching event, unattended.
+ * `@IsUrl()` alone would accept `http://169.254.169.254/…`, turning an agent
+ * that can be talked into creating a webhook into a request-forgery primitive.
+ * Require TLS and a public host here; the same check belongs server-side.
+ */
+const httpsUrl = z
+  .string()
+  .url()
+  .refine((value) => {
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      return false
+    }
+    if (url.protocol !== 'https:') return false
+    const host = url.hostname.toLowerCase()
+    return !(
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host.endsWith('.internal') ||
+      /^\[?::1\]?$/.test(host) ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    )
+  }, 'Must be an https URL on a public host')
+
+/** Shared pagination for the list endpoints that use limit/offset. */
+const listLimit = z
+  .number()
+  .int()
+  .min(1)
+  .max(100)
+  .optional()
+  .describe('Max results, 1-100. Defaults to 50.')
+const listOffset = z
+  .number()
+  .int()
+  .min(0)
+  .optional()
+  .describe('How many to skip. Defaults to 0.')
+
+/** Drops keys the caller never set, so a patch stays a patch. */
+function definedOnly(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(args).filter(([, v]) => v !== undefined),
+  )
 }
 
 /**
@@ -484,5 +634,410 @@ export const TOOLS: ToolDefinition[] = [
     schema: {},
     readOnly: true,
     run: (client) => client.request('GET', '/calendar-connections/connections'),
+  },
+
+  // ---- Follow-up ----------------------------------------------------------
+  {
+    name: 'send_quick_email',
+    title: 'Email an attendee',
+    description:
+      'Send a one-off email to an attendee — a follow-up, a prep note, directions. Takes an attendeeId from get_appointment. Rate limited to 5 per 5 minutes.',
+    schema: {
+      attendeeId: z.string().describe('From get_appointment'),
+      title: z.string().describe('Subject line'),
+      content: z.string().describe('Body of the email'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/attendee/quick-mail', { body }),
+  },
+  {
+    name: 'update_meeting_transcription',
+    title: 'Store a transcript or summary',
+    description:
+      'Attach a meeting transcript and/or AI summary (markdown) to an appointment. meetergo does not record calls — feed this from a notetaker. Only the fields you send change; pass null to clear one.',
+    schema: {
+      appointmentId: z.string(),
+      transcription: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Full transcript in markdown, or null to clear'),
+      summary: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Summary in markdown, or null to clear'),
+    },
+    readOnly: false,
+    run: (client, { appointmentId, ...body }) =>
+      client.request('PATCH', `/appointment/${appointmentId}/transcription`, {
+        body,
+      }),
+  },
+
+  // ---- Meeting types ------------------------------------------------------
+  {
+    name: 'get_meeting_type',
+    title: 'Get a meeting type',
+    description:
+      'Full configuration of one meeting type: duration, channel, buffers, booking questions, reminders, host or queue. Read this before update_meeting_type so you know what you are changing.',
+    schema: { meetingTypeId: z.string() },
+    readOnly: true,
+    run: (client, { meetingTypeId }) =>
+      client.request('GET', `/meeting-type/${meetingTypeId}`),
+  },
+  {
+    name: 'create_meeting_type',
+    title: 'Create a meeting type',
+    description:
+      'Create a new bookable meeting type, owned by the authenticated user. Creates a real, publicly bookable page as soon as it exists. The URL slug is generated from the name; change it afterwards with update_meeting_type.',
+    schema: {
+      ...meetingInfoShape,
+      spots: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('Attendees per slot, for a group booking'),
+    },
+    readOnly: false,
+    run: (client, { spots, ...info }) =>
+      client.request('POST', '/meeting-type', {
+        body: { meetingInfo: definedOnly(info), spots },
+      }),
+  },
+  {
+    name: 'update_meeting_type',
+    title: 'Update a meeting type',
+    description:
+      'Change a meeting type. Only the fields you send change; everything you leave out keeps its current value.',
+    schema: {
+      meetingTypeId: z.string(),
+      ...meetingInfoShape,
+      // Everything is optional on a patch — the create-time requirements do
+      // not apply, and UpdateMeetingInfoDto is fully partial.
+      name: meetingInfoShape.name.optional(),
+      description: meetingInfoShape.description.optional(),
+      duration: meetingInfoShape.duration.optional(),
+      channel: meetingInfoShape.channel.optional(),
+      // Unlike the create DTO, slug is validated here, so it survives.
+      slug: z.string().optional().describe('URL segment of the booking page'),
+      spots: z.number().int().min(1).max(100).optional(),
+    },
+    readOnly: false,
+    run: (client, { meetingTypeId, slug, spots, ...info }) => {
+      const meetingInfo = definedOnly(info)
+      return client.request('PATCH', `/meeting-type/${meetingTypeId}`, {
+        // Omit meetingInfo entirely when only slug or spots changed, rather
+        // than sending an empty object.
+        body: {
+          ...(Object.keys(meetingInfo).length ? { meetingInfo } : {}),
+          slug,
+          spots,
+        },
+      })
+    },
+  },
+  {
+    name: 'delete_meeting_type',
+    title: 'Delete a meeting type',
+    description:
+      'Delete a meeting type. Its booking page stops working immediately. Existing appointments are not cancelled.',
+    schema: { meetingTypeId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { meetingTypeId }) =>
+      client.request('DELETE', `/meeting-type/${meetingTypeId}`),
+  },
+
+  // ---- Booking page -------------------------------------------------------
+  {
+    name: 'get_personal_page',
+    title: 'Get the booking page',
+    description:
+      "The authenticated user's personal booking page: colours, header image, description, profile links, meeting-type order.",
+    schema: {},
+    readOnly: true,
+    run: (client) => client.request('GET', '/personal-page/me'),
+  },
+  {
+    name: 'update_personal_page',
+    title: 'Update the booking page',
+    description:
+      'Change branding on the personal booking page. Only the fields you send change. Colours need useCustomColors set, or they are ignored.',
+    schema: {
+      useCustomColors: z
+        .boolean()
+        .optional()
+        .describe('Must be true for primaryColor/secondaryColor to take effect'),
+      primaryColor: z.string().optional().describe('Hex, e.g. #e55000'),
+      secondaryColor: z.string().optional().describe('Hex, e.g. #e55000'),
+      headerImage: z.string().nullable().optional().describe('Image URL, or null to remove'),
+      description: z.string().optional(),
+      showAllMeetingTypes: z.boolean().optional(),
+      meetingTypeOrder: z
+        .array(z.string())
+        .optional()
+        .describe('Meeting type ids, in display order'),
+      onlineProfiles: z
+        .record(z.unknown())
+        .optional()
+        .describe(
+          'Contact and social links: linkedIn, facebook, twitter, instagram, xing, phone, email, addressStreet, addressCity, addressPostalCode, addressCountry, customLinks',
+        ),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('PATCH', '/personal-page/me', { body }),
+  },
+
+  // ---- Routing forms ------------------------------------------------------
+  {
+    name: 'list_routing_forms',
+    title: 'List routing forms',
+    description:
+      'List routing forms and funnels — the qualification forms that route a visitor to the right meeting type or page. Returns 50 at a time; page with offset.',
+    schema: { limit: listLimit, offset: listOffset },
+    readOnly: true,
+    run: (client, query) => client.request('GET', '/routing-form', { query }),
+  },
+  {
+    name: 'get_routing_form',
+    title: 'Get a routing form',
+    description:
+      'Full definition of a routing form: its steps, fields and the qualifier rules that decide where a visitor is sent.',
+    schema: { formId: z.string() },
+    readOnly: true,
+    run: (client, { formId }) => client.request('GET', `/routing-form/${formId}`),
+  },
+  {
+    name: 'create_routing_form',
+    title: 'Create a routing form',
+    description:
+      'Create a routing form or funnel. Fields come from data fields (see list_data_fields); qualifiers route on the answers. Include one qualifier with isFallback true as the default route.',
+    schema: {
+      name: z.string(),
+      // Required by the API, with no default.
+      structureType: z
+        .enum(['FORM_ONLY', 'FUNNEL_WITH_FORM', 'FUNNEL_ONLY'])
+        .describe('FORM_ONLY is the plain form; the FUNNEL variants add steps.'),
+      showProgressBar: z.boolean().optional(),
+      slug: z
+        .string()
+        .optional()
+        .describe('Public share link segment, at cal.meetergo.com/f/<slug>'),
+      fields: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe('Existing data fields to show: [{ dataFieldId, order }]'),
+      funnelSteps: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe('Steps, each with its own dataFields'),
+      qualifiers: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe(
+          'Routing rules: { routingAction, meetingTypeId?, expression, isFallback? }. routingAction is one of eventRedirect, customPage, externalRedirect, contactForm, requestCallback, instantCall, formRedirect.',
+        ),
+    },
+    readOnly: false,
+    run: (client, body) => client.request('POST', '/routing-form', { body }),
+  },
+  {
+    name: 'update_routing_form',
+    title: 'Update a routing form',
+    description:
+      'Update a routing form. Sending qualifiers, fields or funnelSteps REPLACES them: qualifiers you omit are deleted, and fields and steps are rebuilt from what you send. Read get_routing_form first and send the full list, or leave those three out to change only the name, slug or progress bar.',
+    schema: {
+      formId: z.string(),
+      name: z.string().optional(),
+      structureType: z
+        .enum(['FORM_ONLY', 'FUNNEL_WITH_FORM', 'FUNNEL_ONLY'])
+        .optional(),
+      showProgressBar: z.boolean().optional(),
+      slug: z.string().optional(),
+      fields: z.array(z.record(z.unknown())).optional(),
+      funnelSteps: z.array(z.record(z.unknown())).optional(),
+      qualifiers: z.array(z.record(z.unknown())).optional(),
+    },
+    readOnly: false,
+    // Declarative sync deletes whatever is left out, so this can quietly
+    // dismantle a form's routing rules. Hosts should be able to confirm it.
+    destructive: true,
+    run: (client, { formId, ...body }) =>
+      client.request('PATCH', `/routing-form/${formId}`, { body }),
+  },
+  {
+    name: 'delete_routing_form',
+    title: 'Delete a routing form',
+    description:
+      'Delete a routing form. Any link already shared stops working.',
+    schema: { formId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { formId }) =>
+      client.request('DELETE', `/routing-form/${formId}`),
+  },
+  {
+    name: 'send_routing_form',
+    title: 'Send a routing form',
+    description:
+      'Send a routing form to one recipient by email or SMS, or just mint the link. The response always carries publicUrl. Rate limited to 20 per minute.',
+    schema: {
+      formId: z.string(),
+      recipientName: z.string(),
+      deliveryMethod: z
+        .enum(['email', 'sms', 'link'])
+        .optional()
+        .describe('Defaults to email. "link" only returns the URL.'),
+      email: z.string().email().optional().describe('Required for email delivery'),
+      phone: z.string().optional().describe('E.164, required for sms delivery'),
+      message: z.string().optional().describe('Cover message'),
+      contactId: z.string().optional().describe('Link the response to a CRM contact'),
+    },
+    readOnly: false,
+    run: (client, { formId, ...body }) =>
+      client.request('POST', `/routing-form/${formId}/send`, { body }),
+  },
+  {
+    name: 'list_form_recipients',
+    title: 'List form recipients',
+    description:
+      'Who a routing form was sent to, with status (sent, opened, completed) and timestamps. Use to chase the ones who have not answered.',
+    schema: { formId: z.string() },
+    readOnly: true,
+    run: (client, { formId }) =>
+      client.request('GET', `/routing-form/${formId}/recipients`),
+  },
+  {
+    name: 'list_data_fields',
+    title: 'List data fields',
+    description:
+      'List the reusable form fields shared across routing forms. Check here before creating a duplicate. Returns 50 at a time; page with offset.',
+    schema: { limit: listLimit, offset: listOffset },
+    readOnly: true,
+    run: (client, query) => client.request('GET', '/data-field', { query }),
+  },
+  {
+    name: 'create_data_field',
+    title: 'Create a data field',
+    description:
+      'Create a reusable form field, company-wide. Choice fields need options; text fields do not.',
+    schema: {
+      label: z.string().describe('Shown to the person filling the form'),
+      // The API enum distinguishes single from multi variants; a bare "text"
+      // or "checkbox" is rejected.
+      fieldType: z.enum(DATA_FIELD_TYPES),
+      name: z.string().optional().describe('Internal key. Derived from the label if omitted.'),
+      required: z.boolean().optional(),
+      options: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe('For choice fields: [{ label, value }]'),
+      target: z
+        .string()
+        .optional()
+        .describe('Maps the answer onto a known attendee field rather than a custom one'),
+    },
+    readOnly: false,
+    run: (client, body) => client.request('POST', '/data-field', { body }),
+  },
+
+  // ---- CRM ----------------------------------------------------------------
+  {
+    name: 'bulk_create_contacts',
+    title: 'Bulk-create contacts',
+    description:
+      'Create many contacts at once, for an import. Each needs email or phoneNumber. Up to 1000 per call and throttled to 3 calls per minute, so batch rather than looping.',
+    schema: {
+      contacts: z
+        .array(
+          z
+            .object({
+              firstName: z.string().optional(),
+              lastName: z.string().optional(),
+              email: z.string().email().optional(),
+              phoneNumber: z.string().optional(),
+              tags: z.array(z.string()).optional(),
+              notes: z.string().optional(),
+            })
+            // The API's own email-or-phone constraint is skipped when email is
+            // absent, so an empty row imports as a blank contact. Catch it here.
+            .refine(
+              (c) => Boolean(c.email || c.phoneNumber),
+              'Each contact needs an email or a phoneNumber',
+            ),
+        )
+        .min(1)
+        .max(1000),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/bulk', { body, root: true }),
+  },
+  {
+    name: 'delete_contact',
+    title: 'Delete a contact',
+    description:
+      'Permanently delete a CRM contact. Their past appointments remain, but the contact record and its form answers are gone.',
+    schema: { contactId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { contactId }) =>
+      client.request('DELETE', `/crm/${contactId}`, { root: true }),
+  },
+
+  // ---- Webhooks -----------------------------------------------------------
+  {
+    name: 'list_webhooks',
+    title: 'List webhooks',
+    description:
+      'List webhook endpoints for the company. Maximum six exist at once, so check here before creating one.',
+    schema: {},
+    readOnly: true,
+    run: (client) => client.request('GET', '/webhooks', { root: true }),
+  },
+  {
+    name: 'create_webhook',
+    title: 'Create a webhook',
+    description:
+      'Register an HTTPS endpoint to receive events. Six per company maximum; the API says so plainly when you hit it.',
+    schema: {
+      endpoint: httpsUrl.describe('HTTPS URL that will receive POSTs'),
+      eventTypes: z.array(z.enum(WEBHOOK_EVENTS)).min(1),
+      description: z.string().optional().describe('Label, for your own reference'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/webhooks', { body, root: true }),
+  },
+  {
+    name: 'update_webhook',
+    title: 'Update a webhook',
+    description:
+      'Change a webhook endpoint, its description, or which events it receives. eventTypes replaces the existing list.',
+    schema: {
+      webhookId: z.string(),
+      endpoint: httpsUrl.optional(),
+      eventTypes: z.array(z.enum(WEBHOOK_EVENTS)).min(1).optional(),
+      description: z.string().optional(),
+    },
+    readOnly: false,
+    run: (client, { webhookId, ...body }) =>
+      client.request('PATCH', `/webhooks/${webhookId}`, { body, root: true }),
+  },
+  {
+    name: 'delete_webhook',
+    title: 'Delete a webhook',
+    description:
+      'Delete a webhook endpoint. Whatever depends on those events stops receiving them immediately.',
+    schema: { webhookId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { webhookId }) =>
+      client.request('DELETE', `/webhooks/${webhookId}`, { root: true }),
   },
 ]

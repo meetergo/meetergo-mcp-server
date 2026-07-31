@@ -10,7 +10,7 @@ change anything. Both are useful and they do different jobs:
 | | Docs MCP | This server |
 |---|---|---|
 | Endpoint | `developer.meetergo.com/mcp` | runs locally over stdio |
-| Tools | `SearchMeetergo` | 17 scheduling and CRM tools |
+| Tools | `SearchMeetergo` | 40 scheduling, CRM and config tools |
 | Can it book? | No | **Yes** |
 | Use it to | write an integration | be the integration |
 
@@ -76,6 +76,11 @@ one response that states the request was never processed.
 
 ## Tools
 
+40 tools, covering scheduling end to end. **Scheduling** is the loop most agents
+live in; the rest is there so an agent never has to fall back to raw REST.
+
+### Scheduling
+
 | Tool | Writes? | Purpose |
 |---|---|---|
 | `get_me` | | Confirm the token works — start here when something looks empty |
@@ -83,37 +88,93 @@ one response that states the request was never processed.
 | `get_availability` | | Bookable slots for a meeting type |
 | `book_appointment` | **yes** | Book a slot |
 | `reschedule_appointment` | **yes** | Move an appointment |
-| `cancel_appointment` | **yes** | Cancel, or drop one attendee |
+| `cancel_appointment` | **destructive** | Cancel, or drop one attendee |
 | `list_appointments` | | Paginated calendar with filters |
 | `get_todays_appointments` | | Today only |
 | `get_appointment` | | One appointment in full, including `attendeeId`s |
 | `add_guest` | **yes** | Add a guest email to an appointment |
 | `update_appointment_notes` | **yes** | Write call prep or an outcome back |
 | `create_one_time_booking_link` | **yes** | Send a single-use link instead of booking for someone |
+| `list_calendar_connections` | | Which calendars are attached |
+
+### Follow-up
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `send_quick_email` | **yes** | One-off email to an attendee (5 per 5 min) |
+| `update_meeting_transcription` | **yes** | Attach a transcript or summary from a notetaker |
+
+### Meeting types
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `get_meeting_type` | | Full config — read before updating |
+| `create_meeting_type` | **yes** | Create a bookable meeting type |
+| `update_meeting_type` | **yes** | Change one |
+| `delete_meeting_type` | **destructive** | Remove one; its page stops working |
+
+### Booking page
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `get_personal_page` | | Colours, header, links, meeting-type order |
+| `update_personal_page` | **yes** | Change branding |
+
+### Routing forms
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `list_routing_forms` | | All forms and funnels |
+| `get_routing_form` | | Steps, fields and routing rules |
+| `create_routing_form` | **yes** | Build a qualification form |
+| `update_routing_form` | **yes** | Change one |
+| `delete_routing_form` | **destructive** | Remove one; shared links break |
+| `send_routing_form` | **yes** | Send by email or SMS, or mint a link |
+| `list_form_recipients` | | Who got it, who answered |
+| `list_data_fields` | | Reusable fields across forms |
+| `create_data_field` | **yes** | Add one |
+
+### CRM
+
+| Tool | Writes? | Purpose |
+|---|---|---|
 | `search_contacts` | | Find a contact before creating a duplicate |
 | `get_contact` | | Full record, by `contactId` or by `attendeeId` from a booking |
 | `create_contact` | **yes** | Add a contact |
 | `update_contact` | **yes** | Edit a contact |
-| `list_calendar_connections` | | Which calendars are attached |
+| `bulk_create_contacts` | **yes** | Import many at once (3 calls per min) |
+| `delete_contact` | **destructive** | Remove a contact and its form answers |
 
-Writes carry `readOnlyHint: false`, and `cancel_appointment` carries
-`destructiveHint: true`, so hosts can require confirmation before an agent
-changes anything real.
+### Webhooks
 
-## Why seventeen and not a hundred
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `list_webhooks` | | Endpoints in use (max 6 per company) |
+| `create_webhook` | **yes** | Register an HTTPS endpoint |
+| `update_webhook` | **yes** | Change URL or events |
+| `delete_webhook` | **destructive** | Remove one; events stop immediately |
 
-The Platform API has 100 operations. Every tool definition consumes context in
-the model's window, and selection accuracy drops as the list grows — an agent
-picking between 100 near-identical operations picks worse than one choosing
-between seventeen.
+Writes carry `readOnlyHint: false`, and everything marked **destructive** above
+carries `destructiveHint: true`, so hosts can require confirmation before an
+agent removes something a human would miss.
 
-The bar for a tool here is that it closes a loop an agent can complete on its
-own: discover, schedule, change, review, follow up, and know who it is talking
-to. Configuration surfaces stay out — meeting-type creation, routing-form
-definitions and page branding all need a large request body the model would have
-to invent from a docstring, and a mistyped payload is worse than no tool. Those
-belong in the dashboard, and stay reachable over
-[REST](https://developer.meetergo.com).
+## What the tools do for you
+
+The API asks for things a model has no way to know. Rather than describing that
+boilerplate in a docstring and hoping, the tools supply it:
+
+- **`book_appointment`** builds the nested `attendee` object, defaults
+  `receiveReminders` and the required empty `notes`, and refuses a booking with
+  no name rather than writing a blank one into the invitation.
+- **`get_availability` and `book_appointment`** resolve which hosts to compute
+  for. The API rejects both with `Expected hostIds or queueId` before it even
+  loads the meeting type, and a model only ever has a `meetingTypeId`.
+- **`create_meeting_type`** fills the six required-but-irrelevant `meetingInfo`
+  fields (`customChannelName`, `connectChannelName`, an empty
+  `confirmationButton`, …) that reject the whole request when missing. Anything
+  the schema does not name goes through `advanced`.
+- **`list_appointments`** supplies the required `page` and `pageSize`, which the
+  API has no defaults for.
 
 ## Development
 
@@ -128,10 +189,3 @@ tool calls, and the exact body shape the API's DTOs require. That is deliberate.
 keys, a flat body where `BookingDto` wants a nested `attendee` — and every test
 passed, because they only ever checked that the tools existed. Adding or
 changing a tool means pinning its request against the route in `apps/api`.
-
-## Prior art
-
-The community [`chill-lichen/meetergo-mcp`](https://github.com/chill-lichen/meetergo-mcp)
-server (Python, BSD-3) covers a wider slice of the API — routing forms,
-webhooks, page branding. It found several endpoint-path bugs before we did.
-Worth a look if you need surface this server deliberately leaves out.
