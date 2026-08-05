@@ -15,6 +15,8 @@
  * MEETERGO_API_URL keeps working for staging hosts.
  */
 export const DEFAULT_BASE_URL = 'https://api.meetergo.com/v4'
+/** Production apps/next root — where the Mira widget loader is served from. */
+export const DEFAULT_NEXT_URL = 'https://cal.meetergo.com'
 
 /**
  * Transient by nature: rate limiting and upstream hiccups. Anything else is a
@@ -64,6 +66,13 @@ export interface MeetergoClientOptions {
   baseUrl?: string
   timeoutMs?: number
   userAgent?: string
+  /**
+   * Root of the apps/next deployment that hosts the Mira widget loader
+   * (`/mira-widget.js`) and iframe page. Only used to RENDER install snippets
+   * and preview URLs — never requested by this client. Overridable for local
+   * stacks via MEETERGO_NEXT_URL.
+   */
+  nextUrl?: string
 }
 
 export interface RequestOptions {
@@ -110,6 +119,7 @@ export class MeetergoClient {
   private readonly rootUrl: string
   private readonly timeoutMs: number
   private readonly userAgent: string
+  readonly nextUrl: string
 
   constructor({
     token,
@@ -117,6 +127,7 @@ export class MeetergoClient {
     baseUrl,
     timeoutMs,
     userAgent,
+    nextUrl,
   }: MeetergoClientOptions) {
     this.token = token
     this.userId = userId
@@ -126,6 +137,7 @@ export class MeetergoClient {
     this.rootUrl = this.baseUrl.replace(/\/v4$/, '')
     this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.userAgent = userAgent ?? 'meetergo-mcp'
+    this.nextUrl = (nextUrl ?? DEFAULT_NEXT_URL).replace(/\/+$/, '')
   }
 
   private headers(): Record<string, string> {

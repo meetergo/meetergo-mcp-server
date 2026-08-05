@@ -198,6 +198,74 @@ function definedOnly(args: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * `webChat.publicKey` is server-minted and absent from the update DTO; the
+ * API's forbidNonWhitelisted validation 400s any payload that carries it. It
+ * shows up naturally when a snapshot from GET is played back, so every write
+ * path strips it rather than asking the model to.
+ */
+function stripPublicKey(webChat: Record<string, unknown>): Record<string, unknown> {
+  const { publicKey: _publicKey, ...rest } = webChat
+  return rest
+}
+
+/**
+ * The assistant-profile DTO requires every field, but half of them are
+ * mechanical (`logoUrl: null`, empty avoid-instructions). Fill those so the
+ * model only supplies what actually shapes behavior.
+ */
+function normalizeAssistantProfile(
+  profile: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    logoUrl: null,
+    avoidInstructions: '',
+    outOfHoursMessage: '',
+    knowledgeSourceIds: [],
+    bookingMeetingTypeId: null,
+    routingFormId: null,
+    openingHoursAvailabilityId: null,
+    ...definedOnly(profile),
+  }
+}
+
+/**
+ * Reduce a full settings snapshot (from GET, which includes server-managed
+ * state) to a body the update DTO accepts: keep only the DTO's top-level
+ * fields, strip minted publicKeys, and drop the mirrored `channels.webChat`
+ * list entirely — the controller regenerates it from `webChat`, and replaying
+ * a stale mirror is the one path that could corrupt a rollback.
+ */
+export function sanitizeMiraSettingsForPatch(
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const key of [
+    'enabled',
+    'activationPromptSeen',
+    'customInstructions',
+    'dataAccess',
+    'webChat',
+    'assistantProfiles',
+    'channels',
+    'dealAutopilot',
+  ]) {
+    if (snapshot[key] !== undefined) out[key] = snapshot[key]
+  }
+  if (out.webChat && typeof out.webChat === 'object') {
+    out.webChat = stripPublicKey(out.webChat as Record<string, unknown>)
+  }
+  if (out.channels && typeof out.channels === 'object') {
+    const { webChat: _mirror, ...restChannels } = out.channels as Record<
+      string,
+      unknown
+    >
+    if (Object.keys(restChannels).length) out.channels = restChannels
+    else delete out.channels
+  }
+  return out
+}
+
+/**
  * Availability has to be told WHICH hosts to compute for: a queue meeting type
  * by its `queueId`, otherwise the owner as the single host. Without one the API
  * rejects with 400 "Expected hostIds or queueId" — and it checks this before it
@@ -824,6 +892,12 @@ export const TOOLS: ToolDefinition[] = [
         .enum(['FORM_ONLY', 'FUNNEL_WITH_FORM', 'FUNNEL_ONLY'])
         .describe('FORM_ONLY is the plain form; the FUNNEL variants add steps.'),
       showProgressBar: z.boolean().optional(),
+      skipForm: z
+        .boolean()
+        .optional()
+        .describe(
+          'Route on programmatic answers without rendering the form. REQUIRED (true) when the form backs Mira web-chat qualification: the widget submits answers conversationally, before any name exists, and qualification rejects nameless submissions unless skipForm is set.',
+        ),
       slug: z
         .string()
         .optional()
@@ -858,6 +932,12 @@ export const TOOLS: ToolDefinition[] = [
         .enum(['FORM_ONLY', 'FUNNEL_WITH_FORM', 'FUNNEL_ONLY'])
         .optional(),
       showProgressBar: z.boolean().optional(),
+      skipForm: z
+        .boolean()
+        .optional()
+        .describe(
+          'Route on programmatic answers without rendering the form — required (true) for forms backing Mira web-chat qualification.',
+        ),
       slug: z.string().optional(),
       fields: z.array(z.record(z.unknown())).optional(),
       funnelSteps: z.array(z.record(z.unknown())).optional(),
@@ -1039,5 +1119,290 @@ export const TOOLS: ToolDefinition[] = [
     destructive: true,
     run: (client, { webhookId }) =>
       client.request('DELETE', `/webhooks/${webhookId}`, { root: true }),
+  },
+
+  // ---- Mira & website knowledge -------------------------------------------
+  {
+    name: 'get_mira_settings',
+    title: 'Get Mira settings',
+    description:
+      "Read the company's resolved Mira (AI assistant) configuration: master switch, assistant profiles, website chat widget (webChat, including its server-minted publicKey), data-access toggles. Save this output before changing anything — restore_mira_settings takes it back verbatim.",
+    schema: {},
+    readOnly: true,
+    run: (client) =>
+      client.request('GET', '/company/mira-settings', { root: true }),
+  },
+  {
+    name: 'update_mira_settings',
+    title: 'Update Mira settings',
+    description:
+      'Partially update Mira configuration (admin only). Fields left out keep their current value; webChat merges field-by-field, assistantProfiles replaces the whole list. Saving any webChat field mints the widget publicKey even while enabled stays false — a saved-but-disabled widget is the DRAFT state, testable via the preview URL from get_mira_widget_embed. Returns { previous, current } so the caller can keep previous as a rollback snapshot. The API rejects unknown fields.',
+    schema: {
+      enabled: z
+        .boolean()
+        .optional()
+        .describe('Company-wide Mira master switch'),
+      customInstructions: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe('Company-wide instructions for the dashboard assistant'),
+      dataAccess: z
+        .object({})
+        .passthrough()
+        .optional()
+        .describe(
+          'Per-category toggles: meetingTypes, appointments, workflows, forms, files, contacts, companies, deals — each boolean',
+        ),
+      webChat: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe(
+              'Widget live on customer websites. Keep false while drafting; the preview page works with a disabled widget.',
+            ),
+          assistantName: z.string().max(60).optional(),
+          welcomeMessage: z.string().max(280).optional(),
+          customPrompt: z
+            .string()
+            .max(4000)
+            .optional()
+            .describe('Appended to the system prompt — behavior instructions'),
+          qualify: z
+            .boolean()
+            .optional()
+            .describe('Ask the routing form questions before offering slots'),
+          routingFormId: z.string().max(64).nullable().optional(),
+          bookingMeetingTypeId: z
+            .string()
+            .max(64)
+            .nullable()
+            .optional()
+            .describe('Meeting type Mira books inside the conversation'),
+          useKnowledge: z
+            .boolean()
+            .optional()
+            .describe('Answer from the crawled/ingested company knowledge base'),
+          aiDisclosure: z
+            .boolean()
+            .optional()
+            .describe('Tell visitors they are talking to an AI'),
+          privacyPolicyUrl: z
+            .string()
+            .max(2048)
+            .nullable()
+            .optional()
+            .describe(
+              'Full URL with protocol. Lead capture stays off until this is set.',
+            ),
+          imprintUrl: z.string().max(2048).nullable().optional(),
+          allowedDomains: z
+            .array(z.string().max(255))
+            .optional()
+            .describe(
+              'Bare hostnames allowed to embed the widget, e.g. ["example.com"]. Empty = any origin outside production.',
+            ),
+          accentColor: z.string().optional().describe('Hex, e.g. #1a2b3c'),
+          defaultLanguage: z.enum(['de', 'en']).optional(),
+          quickActions: z.array(z.string().max(80)).max(6).optional(),
+          humanHandoff: z.boolean().optional(),
+          greetingEnabled: z.boolean().optional(),
+          greetingMessage: z.string().max(140).optional(),
+        })
+        .passthrough()
+        .optional(),
+      assistantProfiles: z
+        .array(
+          z
+            .object({
+              id: z.string().max(64),
+              name: z.string().max(80),
+              welcomeMessage: z.string().max(280),
+              purpose: z.enum(['sales', 'support', 'booking', 'reception']),
+              tone: z.enum([
+                'friendly',
+                'professional',
+                'short',
+                'formal',
+                'concierge',
+              ]),
+              instructions: z.string().max(4000),
+              capabilities: z.array(
+                z.enum([
+                  'knowledge',
+                  'qualify',
+                  'booking',
+                  'contactDetails',
+                  'summaries',
+                  'handoff',
+                ]),
+              ),
+              boundaries: z.array(
+                z.enum([
+                  'confidence',
+                  'human',
+                  'businessHours',
+                  'sensitive',
+                  'whatsappWindow',
+                ]),
+              ),
+              avoidInstructions: z.string().max(2000).optional(),
+              outOfHoursMessage: z.string().max(500).optional(),
+              bookingMeetingTypeId: z.string().max(64).nullable().optional(),
+              routingFormId: z.string().max(64).nullable().optional(),
+            })
+            .passthrough(),
+        )
+        .max(20)
+        .optional()
+        .describe(
+          'REPLACES the whole list. Include every profile that should exist afterwards.',
+        ),
+    },
+    readOnly: false,
+    destructive: true,
+    run: async (client, args) => {
+      const previous = await client.request<Record<string, unknown>>(
+        'GET',
+        '/company/mira-settings',
+        { root: true },
+      )
+      const body = definedOnly({
+        enabled: args.enabled,
+        customInstructions: args.customInstructions,
+        dataAccess: args.dataAccess,
+        webChat: args.webChat ? stripPublicKey(args.webChat) : undefined,
+        assistantProfiles: Array.isArray(args.assistantProfiles)
+          ? args.assistantProfiles.map(normalizeAssistantProfile)
+          : undefined,
+      })
+      const current = await client.request('PATCH', '/company/mira-settings', {
+        body,
+        root: true,
+      })
+      return { previous, current }
+    },
+  },
+  {
+    name: 'restore_mira_settings',
+    title: 'Restore Mira settings from a snapshot',
+    description:
+      'Roll Mira configuration back to a snapshot taken earlier (the `previous` object from update_mira_settings, or a saved get_mira_settings result). Server-managed fields (publicKey, the mirrored channels.webChat list) are stripped automatically — the minted publicKey survives a rollback, which is harmless while the widget is disabled.',
+    schema: {
+      settings: z
+        .record(z.unknown())
+        .describe(
+          'The full settings snapshot to restore. Pass it back unmodified.',
+        ),
+    },
+    readOnly: false,
+    destructive: true,
+    run: (client, { settings }) =>
+      client.request('PATCH', '/company/mira-settings', {
+        body: sanitizeMiraSettingsForPatch(settings),
+        root: true,
+      }),
+  },
+  {
+    name: 'get_mira_widget_embed',
+    title: 'Get the Mira widget install snippet',
+    description:
+      'The embed snippet a website owner pastes before </body>, plus the preview URL for testing a saved-but-disabled widget. Requires the webChat publicKey, which is minted on the first update_mira_settings call that touches webChat.',
+    schema: {},
+    readOnly: true,
+    run: async (client) => {
+      const settings = await client.request<{
+        webChat?: { publicKey?: string; enabled?: boolean; allowedDomains?: string[] }
+      }>('GET', '/company/mira-settings', { root: true })
+      const publicKey = settings?.webChat?.publicKey
+      if (!publicKey)
+        throw new Error(
+          'No widget publicKey exists yet. Call update_mira_settings with any webChat field first — that mints the key without enabling anything.',
+        )
+      const loaderUrl = `${client.nextUrl}/mira-widget.js`
+      return {
+        publicKey,
+        enabled: settings?.webChat?.enabled ?? false,
+        allowedDomains: settings?.webChat?.allowedDomains ?? [],
+        loaderUrl,
+        snippet: `<script\n  src="${loaderUrl}"\n  data-mira-key="${publicKey}"\n  async\n></script>`,
+        widgetPageUrl: `${client.nextUrl}/mira-widget?key=${publicKey}`,
+        previewUrl: `${client.nextUrl}/mira-widget?key=${publicKey}&preview=1`,
+      }
+    },
+  },
+  {
+    name: 'crawl_company_website',
+    title: 'Crawl a website into the knowledge base',
+    description:
+      "Start a background crawl of a website into the company's Mira knowledge base: sitemap plus same-origin links, readable text extracted, chunked and embedded. Poll get_crawl_status for progress. Re-crawling an unchanged site ingests 0 new pages — that is success, not failure. Requires the file-uploads entitlement (Growth and up).",
+    schema: {
+      url: z
+        .string()
+        .url()
+        .describe('Start URL, e.g. the site root. Same-origin pages only.'),
+      maxPages: z.number().int().min(1).max(100).optional(),
+      language: z
+        .string()
+        .length(2)
+        .optional()
+        .describe('Keep only pages in this 2-letter language, e.g. "de"'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/knowledge/crawl', {
+        body: definedOnly(body),
+        root: true,
+      }),
+  },
+  {
+    name: 'get_crawl_status',
+    title: 'Get website crawl status',
+    description:
+      'Progress of the current or last knowledge-base website crawl. { status: "idle" } means none has run yet.',
+    schema: {},
+    readOnly: true,
+    run: (client) =>
+      client.request('GET', '/knowledge/crawl/status', { root: true }),
+  },
+  {
+    name: 'list_knowledge_documents',
+    title: 'List knowledge documents',
+    description:
+      "Documents in the company's Mira knowledge base — crawled pages, uploaded files, synced sources — with their source keys.",
+    schema: {},
+    readOnly: true,
+    run: (client) =>
+      client.request('GET', '/knowledge/documents', { root: true }),
+  },
+  {
+    name: 'delete_knowledge_document',
+    title: 'Delete a knowledge document',
+    description:
+      'Remove one document (and its chunks) from the knowledge base. Mira stops answering from it immediately.',
+    schema: { documentId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { documentId }) =>
+      client.request('DELETE', `/knowledge/documents/${documentId}`, {
+        root: true,
+      }),
+  },
+  {
+    name: 'search_company_knowledge',
+    title: 'Search the company knowledge base',
+    description:
+      'Semantic search over the knowledge base — the same retrieval Mira uses to answer visitors. Use it to verify what Mira will actually find for a question before going live.',
+    schema: {
+      query: z.string().min(1),
+      k: z.number().int().min(1).max(10).optional().describe('Chunks to return, default 5'),
+    },
+    readOnly: true,
+    run: (client, body) =>
+      client.request('POST', '/knowledge/search', {
+        body: definedOnly(body),
+        root: true,
+      }),
   },
 ]

@@ -30,7 +30,7 @@ import {
 } from './client.js'
 import { TOOLS } from './tools.js'
 
-const VERSION = '0.3.0'
+const VERSION = '0.4.0'
 
 interface Credentials {
   token: string
@@ -100,6 +100,10 @@ async function main(): Promise<void> {
     baseUrl: process.env.MEETERGO_API_URL ?? DEFAULT_BASE_URL,
     timeoutMs: readTimeout(),
     userAgent: `meetergo-mcp/${VERSION}`,
+    // Where the Mira widget loader is served from (apps/next). Only rendered
+    // into install snippets; override alongside MEETERGO_API_URL for local
+    // or staging stacks.
+    nextUrl: process.env.MEETERGO_NEXT_URL?.trim() || undefined,
   })
 
   const server = new McpServer({ name: 'meetergo', version: VERSION })

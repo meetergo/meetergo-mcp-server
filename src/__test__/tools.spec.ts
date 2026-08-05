@@ -1,5 +1,5 @@
 import type { MeetergoClient, RequestOptions } from '../client.js'
-import { TOOLS } from '../tools.js'
+import { TOOLS, sanitizeMiraSettingsForPatch } from '../tools.js'
 
 /**
  * These assertions are about the agent contract, not implementation detail.
@@ -8,7 +8,7 @@ import { TOOLS } from '../tools.js'
  */
 describe('meetergo MCP tool surface', () => {
   it('covers the API surface an agent needs, with no duplicate names', () => {
-    expect(TOOLS).toHaveLength(40)
+    expect(TOOLS).toHaveLength(49)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
   })
 
@@ -54,6 +54,7 @@ describe('meetergo MCP tool surface', () => {
       'book_appointment',
       'bulk_create_contacts',
       'cancel_appointment',
+      'crawl_company_website',
       'create_contact',
       'create_data_field',
       'create_meeting_type',
@@ -61,16 +62,19 @@ describe('meetergo MCP tool surface', () => {
       'create_routing_form',
       'create_webhook',
       'delete_contact',
+      'delete_knowledge_document',
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
       'reschedule_appointment',
+      'restore_mira_settings',
       'send_quick_email',
       'send_routing_form',
       'update_appointment_notes',
       'update_contact',
       'update_meeting_transcription',
       'update_meeting_type',
+      'update_mira_settings',
       'update_personal_page',
       'update_routing_form',
       'update_webhook',
@@ -86,9 +90,14 @@ describe('meetergo MCP tool surface', () => {
     expect(destructive).toEqual([
       'cancel_appointment',
       'delete_contact',
+      'delete_knowledge_document',
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
+      // Not deletes, but both overwrite the live assistant configuration a
+      // company's website widget is answering from.
+      'restore_mira_settings',
+      'update_mira_settings',
       // Not a delete, but its qualifier sync removes whatever you leave out.
       'update_routing_form',
     ])
@@ -119,8 +128,16 @@ describe('meetergo MCP tool surface', () => {
       'formId',
       'webhookId',
       'attendeeId',
+      'documentId',
     ]
-    const exempt = new Set(['update_personal_page']) // the caller's own page
+    // Company-scoped singletons: there is exactly one target (the caller's own
+    // page / the company's Mira config / its knowledge base), so no id exists.
+    const exempt = new Set([
+      'update_personal_page',
+      'update_mira_settings',
+      'restore_mira_settings',
+      'crawl_company_website',
+    ])
 
     for (const tool of TOOLS.filter(
       (t) => !t.readOnly && !isCreate(t.name) && !exempt.has(t.name),
@@ -155,6 +172,7 @@ function record(
 ): { client: MeetergoClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = []
   const client = {
+    nextUrl: 'https://next.test',
     request: (method: string, path: string, options: RequestOptions = {}) => {
       calls.push({ method, path, options })
       return Promise.resolve(responses[path] ?? {})
@@ -504,6 +522,175 @@ describe('wire format', () => {
     const tool = TOOLS.find((t) => t.name === 'get_contact')!
     const { client } = record()
     await expect(tool.run(client, {})).rejects.toThrow(/contactId or attendeeId/)
+  })
+})
+
+describe('Mira & knowledge wire format', () => {
+  // All of these routes predate the v4 split and are mounted at the host
+  // root — a call without `root: true` lands on /v4/... and 404s.
+  const SETTINGS_SNAPSHOT = {
+    enabled: true,
+    customInstructions: '',
+    dataAccess: { meetingTypes: true },
+    webChat: { enabled: false, assistantName: 'Mira', publicKey: 'mira_pub_abc' },
+    assistantProfiles: [],
+    channels: {
+      webChat: [{ id: 'default-web', publicKey: 'mira_pub_abc' }],
+      whatsapp: { enabled: false },
+      phone: { enabled: false },
+    },
+  }
+
+  it('reads mira settings from the host root', async () => {
+    const call = await callTool('get_mira_settings')
+    expect(call).toMatchObject({ method: 'GET', path: '/company/mira-settings' })
+    expect(call.options.root).toBe(true)
+  })
+
+  it('returns the prior settings as a rollback snapshot', async () => {
+    const responses = { '/company/mira-settings': SETTINGS_SNAPSHOT }
+    const { client, calls } = record(responses)
+    const tool = TOOLS.find((t) => t.name === 'update_mira_settings')!
+    const result = (await tool.run(client, { enabled: true })) as {
+      previous: unknown
+    }
+    // GET before PATCH: the snapshot must show the state the write replaced.
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PATCH'])
+    expect(result.previous).toEqual(SETTINGS_SNAPSHOT)
+  })
+
+  it('strips the minted publicKey before patching webChat', async () => {
+    const call = await callTool('update_mira_settings', {
+      webChat: { enabled: false, assistantName: 'Mira', publicKey: 'mira_pub_x' },
+    })
+    // UpdateMiraSettingsDto runs forbidNonWhitelisted and has no publicKey
+    // field — replaying a GET snapshot without stripping it is a 400.
+    expect(call.method).toBe('PATCH')
+    expect(call.options.body).toMatchObject({
+      webChat: { enabled: false, assistantName: 'Mira' },
+    })
+    expect(
+      (call.options.body as { webChat: Record<string, unknown> }).webChat,
+    ).not.toHaveProperty('publicKey')
+  })
+
+  it('fills the mechanical assistant-profile fields the DTO requires', async () => {
+    const call = await callTool('update_mira_settings', {
+      assistantProfiles: [
+        {
+          id: 'p-1',
+          name: 'Mira',
+          welcomeMessage: 'Hallo!',
+          purpose: 'sales',
+          tone: 'professional',
+          instructions: 'Qualify, then book.',
+          capabilities: ['knowledge', 'booking'],
+          boundaries: ['confidence'],
+        },
+      ],
+    })
+    const body = call.options.body as {
+      assistantProfiles: Record<string, unknown>[]
+    }
+    // MiraAssistantProfileDto requires every field; these are the mechanical
+    // ones the model should not have to invent.
+    expect(body.assistantProfiles[0]).toMatchObject({
+      id: 'p-1',
+      logoUrl: null,
+      avoidInstructions: '',
+      outOfHoursMessage: '',
+      knowledgeSourceIds: [],
+      bookingMeetingTypeId: null,
+      routingFormId: null,
+      openingHoursAvailabilityId: null,
+    })
+  })
+
+  it('sanitizes a snapshot before restoring it', async () => {
+    const call = await callTool('restore_mira_settings', {
+      settings: SETTINGS_SNAPSHOT,
+    })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/company/mira-settings' })
+    const body = call.options.body as Record<string, any>
+    expect(body.webChat).not.toHaveProperty('publicKey')
+    // The controller regenerates channels.webChat from webChat; replaying a
+    // stale mirror is the one path that could corrupt a rollback.
+    expect(body.channels).not.toHaveProperty('webChat')
+    expect(body.channels).toHaveProperty('whatsapp')
+    expect(body).toMatchObject({ enabled: true })
+  })
+
+  it('drops channels entirely when only the mirror was present', () => {
+    const sanitized = sanitizeMiraSettingsForPatch({
+      enabled: false,
+      channels: { webChat: [{ id: 'default-web' }] },
+    })
+    expect(sanitized).toEqual({ enabled: false })
+  })
+
+  it('builds the embed snippet from the configured next host', async () => {
+    const { client } = record({ '/company/mira-settings': SETTINGS_SNAPSHOT })
+    const tool = TOOLS.find((t) => t.name === 'get_mira_widget_embed')!
+    const result = (await tool.run(client, {})) as Record<string, string>
+    // Must match the loader contract in apps/next/public/mira-widget.js and
+    // the dashboard snippet builder (web-chat-snippet.ts).
+    expect(result.loaderUrl).toBe('https://next.test/mira-widget.js')
+    expect(result.snippet).toContain('data-mira-key="mira_pub_abc"')
+    expect(result.previewUrl).toBe(
+      'https://next.test/mira-widget?key=mira_pub_abc&preview=1',
+    )
+  })
+
+  it('explains how to mint a key instead of returning a broken snippet', async () => {
+    const tool = TOOLS.find((t) => t.name === 'get_mira_widget_embed')!
+    const { client } = record({ '/company/mira-settings': { webChat: {} } })
+    await expect(tool.run(client, {})).rejects.toThrow(/update_mira_settings/)
+  })
+
+  it('starts a crawl with the fields the endpoint accepts', async () => {
+    const call = await callTool('crawl_company_website', {
+      url: 'http://localhost:8330',
+      maxPages: 30,
+      language: 'de',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/knowledge/crawl' })
+    expect(call.options.root).toBe(true)
+    expect(call.options.body).toEqual({
+      url: 'http://localhost:8330',
+      maxPages: 30,
+      language: 'de',
+    })
+  })
+
+  it('reads crawl status and documents from the root-mounted routes', async () => {
+    const status = await callTool('get_crawl_status')
+    expect(status).toMatchObject({ method: 'GET', path: '/knowledge/crawl/status' })
+    expect(status.options.root).toBe(true)
+
+    const docs = await callTool('list_knowledge_documents')
+    expect(docs).toMatchObject({ method: 'GET', path: '/knowledge/documents' })
+    expect(docs.options.root).toBe(true)
+  })
+
+  it('deletes a knowledge document by id', async () => {
+    const call = await callTool('delete_knowledge_document', {
+      documentId: 'doc-1',
+    })
+    expect(call).toMatchObject({
+      method: 'DELETE',
+      path: '/knowledge/documents/doc-1',
+    })
+    expect(call.options.root).toBe(true)
+  })
+
+  it('searches knowledge with query and clamped k', async () => {
+    const call = await callTool('search_company_knowledge', {
+      query: 'PKV Wechsel',
+      k: 5,
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/knowledge/search' })
+    expect(call.options.body).toEqual({ query: 'PKV Wechsel', k: 5 })
+    expect(call.options.root).toBe(true)
   })
 })
 
