@@ -1,11 +1,13 @@
 {
   "name": "@meetergo/mcp-server",
-  "version": "0.4.0",
+  "version": "0.6.2",
   "description": "meetergo MCP server — let AI agents book, reschedule and cancel meetings",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "meetergo-mcp": "dist/index.js"
+    "mcp-server": "dist/index.js",
+    "meetergo-mcp": "dist/index.js",
+    "meetergo-mcp-http": "dist/http.js"
   },
   "keywords": [
     "mcp",
@@ -42,7 +44,7 @@
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
-    "typescript": "^5.8.3",
+    "typescript": "^5.9.2",
     "vitest": "^4.1.10",
     "@types/node": "^22.18.0"
   }

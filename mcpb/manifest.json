@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/dist/mcpb-manifest.schema.json",
+  "manifest_version": "0.2",
+  "name": "meetergo",
+  "display_name": "meetergo",
+  "version": "0.6.2",
+  "description": "Let your AI run your scheduling: set up meetergo from your website, book and reschedule meetings, qualify leads, and manage the Mira website assistant.",
+  "long_description": "Connects Claude to your meetergo account with a Personal Access Token. 56 tools cover the whole loop: availability, booking, rescheduling, contacts and CRM, meeting types, routing forms, webhooks — and the Mira website assistant, from analysing your website and proposing a complete setup to proving it works with scripted test visitors. Try the built-in 'onboard' prompt: Claude audits what exists, proposes a setup, builds it after your approval, and hands you the install snippet. Works on every meetergo plan, including Free. This bundle runs locally over stdio and authenticates with the token you paste at install time. The same tools are served over Streamable HTTP at https://mcp.meetergo.com/mcp, with the same token, for clients that take a remote URL and an Authorization header.",
+  "author": {
+    "name": "meetergo GmbH",
+    "url": "https://meetergo.com"
+  },
+  "homepage": "https://meetergo.com/mcp",
+  "documentation": "https://developer.meetergo.com/mcp-server",
+  "support": "https://meetergo.com/support",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "MEETERGO_TOKEN": "${user_config.token}"
+      }
+    }
+  },
+  "user_config": {
+    "token": {
+      "type": "string",
+      "title": "Personal Access Token",
+      "description": "Create one at my.meetergo.com/integrations — it looks like rgo-… and works on every plan. A Platform API Key (ak_live:…) will not start here: it names no user of its own, and this bundle has no field for the user to act as.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20"
+    }
+  },
+  "keywords": ["scheduling", "calendar", "booking", "crm", "meetergo", "mira"],
+  "license": "MIT"
+}

@@ -20,17 +20,14 @@
  *     }
  *   }
  */
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   DEFAULT_BASE_URL,
   isPlatformApiKey,
-  MeetergoApiError,
   MeetergoClient,
 } from './client.js'
-import { TOOLS } from './tools.js'
-
-const VERSION = '0.4.0'
+import { buildServer } from './server.js'
+import { VERSION } from './version.js'
 
 interface Credentials {
   token: string
@@ -106,53 +103,7 @@ async function main(): Promise<void> {
     nextUrl: process.env.MEETERGO_NEXT_URL?.trim() || undefined,
   })
 
-  const server = new McpServer({ name: 'meetergo', version: VERSION })
-
-  for (const tool of TOOLS) {
-    server.registerTool(
-      tool.name,
-      {
-        title: tool.title,
-        description: tool.description,
-        inputSchema: tool.schema,
-        annotations: {
-          readOnlyHint: tool.readOnly,
-          // Booking and cancelling are not idempotent, and cancelling destroys
-          // something. Hosts use these to decide what to confirm with a human,
-          // so getting them right matters more than it looks.
-          idempotentHint: tool.readOnly,
-          destructiveHint: tool.destructive ?? false,
-        },
-      },
-      async (args) => {
-        try {
-          const result = await tool.run(client, args)
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify(result ?? { ok: true }, null, 2),
-              },
-            ],
-          }
-        } catch (error: unknown) {
-          // Returned as an error result, not thrown: the agent should be able
-          // to read "that slot was taken" and pick another, rather than have
-          // the whole tool call fail opaquely.
-          const message =
-            error instanceof MeetergoApiError
-              ? error.message
-              : `meetergo MCP: ${(error as Error).message}`
-          return {
-            isError: true,
-            content: [{ type: 'text' as const, text: message }],
-          }
-        }
-      },
-    )
-  }
-
-  await server.connect(new StdioServerTransport())
+  await buildServer(client, VERSION).connect(new StdioServerTransport())
 }
 
 main().catch((error: unknown) => {

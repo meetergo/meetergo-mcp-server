@@ -1,5 +1,11 @@
 import { z } from 'zod'
 import type { MeetergoClient } from './client.js'
+import {
+  analyzeInstallHtml,
+  deriveSetupStatus,
+  planFromMe,
+  type SetupStatusInput,
+} from './setup-status.js'
 
 /**
  * The agent-facing tool surface: everything an agent needs to run scheduling
@@ -296,10 +302,17 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_me',
     title: 'Get the authenticated user',
     description:
-      'Return the account this server is authenticated as. Call it first to confirm the token works and to get the userId — it is the cheapest way to tell a bad token apart from a genuinely empty calendar.',
+      'Return the account this server is authenticated as, plus a `plan` block (tier, relevant caps) when the API exposes it. Call it first to confirm the token works and to get the userId — it is the cheapest way to tell a bad token apart from a genuinely empty calendar. Plan limits gate individual actions, never this connection: do not bring up upgrading unless an action actually hits a limit.',
     schema: {},
     readOnly: true,
-    run: (client) => client.request('GET', '/user/me'),
+    run: async (client) => {
+      const me = await client.request<Record<string, unknown>>(
+        'GET',
+        '/user/me',
+      )
+      const plan = planFromMe(me)
+      return plan ? { ...me, plan } : me
+    },
   },
   {
     name: 'list_meeting_types',
@@ -1390,6 +1403,66 @@ export const TOOLS: ToolDefinition[] = [
       }),
   },
   {
+    name: 'propose_conversion_setup',
+    title: 'Propose a Mira setup from a website',
+    description:
+      "Read a sample of a website and propose a complete assistant setup for it: persona, welcome message, grounded instructions, qualification questions, quick actions, the site's own privacy/imprint links, and a knowledge probe for verifying grounded answers. Reads only — nothing is stored and nothing is configured. Feed the result to update_mira_settings to apply it as a draft. Takes up to a minute.",
+    schema: {
+      url: z.string().url().describe("The website to analyse, e.g. the customer's homepage"),
+      useCase: z
+        .enum(['sales', 'support', 'booking', 'reception'])
+        .optional()
+        .describe(
+          'What the assistant is FOR. Changes the brief it is designed against, not just its wording. Defaults to sales.',
+        ),
+      language: z
+        .string()
+        .length(2)
+        .optional()
+        .describe('Restrict the pages read to this 2-letter language, e.g. "de"'),
+    },
+    readOnly: true,
+    run: (client, body) =>
+      client.request('POST', '/knowledge/conversion-proposal', {
+        body: definedOnly(body),
+        root: true,
+      }),
+  },
+  {
+    name: 'answer_visitor_question',
+    title: 'Teach the assistant an answer',
+    description:
+      "Add a question-and-answer pair to the company's knowledge base, in the company's own words. Use it to close a gap a visitor hit. Answering the same question twice replaces the earlier answer rather than leaving two versions.",
+    schema: {
+      question: z.string().max(300).describe('The question, as a visitor would ask it'),
+      answer: z.string().max(5000).describe("The company's answer, verbatim"),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/knowledge/answer', { body, root: true }),
+  },
+  {
+    name: 'get_conversation_insights',
+    title: 'Website chat insights',
+    description:
+      "What the website assistant did lately, and — the useful part — the questions visitors asked that it could not answer. Each is a gap you can close with answer_visitor_question.",
+    schema: {
+      days: z
+        .number()
+        .int()
+        .min(1)
+        .max(90)
+        .optional()
+        .describe('Window in days, 1-90. Defaults to 7.'),
+    },
+    readOnly: true,
+    run: (client, { days }) =>
+      client.request('GET', '/web-chat/insights', {
+        query: definedOnly({ days }),
+        root: true,
+      }),
+  },
+  {
     name: 'search_company_knowledge',
     title: 'Search the company knowledge base',
     description:
@@ -1404,5 +1477,161 @@ export const TOOLS: ToolDefinition[] = [
         body: definedOnly(body),
         root: true,
       }),
+  },
+  {
+    name: 'get_setup_status',
+    title: 'Where this account stands on the way to live',
+    description:
+      'The launch checklist, as the dashboard computes it: bookable meeting type, assistant, knowledge, test drive, install, live — each with done/not-done and the concrete next move. Call it before proposing work (so you never redo what exists) and after each step (so you know what is left).',
+    schema: {},
+    readOnly: true,
+    run: async (client) => {
+      const settings = await client.request<SetupStatusInput['settings']>(
+        'GET',
+        '/company/mira-settings',
+        { root: true },
+      )
+      // Both counts are entitlement-gated or empty on fresh accounts; a
+      // failure to read them means "none yet", not a broken checklist.
+      const [documents, meetingTypes] = await Promise.all([
+        client
+          .request<{ documents?: unknown[] }>('GET', '/knowledge/documents', {
+            root: true,
+          })
+          .catch(() => ({ documents: [] as unknown[] })),
+        client
+          .request<unknown[]>('GET', '/meeting-type')
+          .catch(() => [] as unknown[]),
+      ])
+      return deriveSetupStatus({
+        settings: settings ?? {},
+        knowledgeDocumentCount: documents?.documents?.length ?? 0,
+        meetingTypeCount: Array.isArray(meetingTypes) ? meetingTypes.length : 0,
+      })
+    },
+  },
+  {
+    name: 'create_qualification_form',
+    title: 'Turn qualification questions into a routing form',
+    description:
+      "Create a real routing form from qualification questions (typically the `questions` from propose_conversion_setup): structured fields the company can edit in the form editor, plus a fallback rule routing every qualified visitor into the given meeting type (or a callback when none is given). Point the assistant profile's routingFormId at the returned formId and set webChat.qualify=true via update_mira_settings.",
+    schema: {
+      assistantName: z
+        .string()
+        .max(60)
+        .describe('Names the form recognisably, e.g. "Qualification – Lena"'),
+      language: z
+        .string()
+        .length(2)
+        .optional()
+        .describe('Form title language, "de" or "en". Defaults to en.'),
+      meetingTypeId: z
+        .string()
+        .optional()
+        .describe(
+          'Where qualified visitors book. Omit to route them to a callback instead.',
+        ),
+      questions: z
+        .array(
+          z.object({
+            label: z.string().max(200).describe('The question, as asked'),
+            key: z
+              .string()
+              .max(80)
+              .describe('Stable answer key, e.g. "team_size"'),
+            options: z
+              .array(z.string().max(120))
+              .describe('Choice options; empty for a free-text question'),
+          }),
+        )
+        .min(1)
+        .max(10),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/knowledge/qualification-form', {
+        body: definedOnly(body),
+        root: true,
+      }),
+  },
+  {
+    name: 'run_test_drive',
+    title: 'Prove the assistant works (scripted visitors)',
+    description:
+      'Send scripted visitors at the saved assistant — a buyer who books, a lead who asks for a callback, an adversary probing for invented promises — and return pass/fail verdicts with full transcripts. Runs in preview mode: nothing is saved, no emails go out, and the widget does not need to be live. Takes about a minute; rate-limited to a few runs per hour. This is the proof step: show the user the verdicts instead of telling them it works.',
+    schema: {},
+    readOnly: true,
+    run: async (client) => {
+      const settings = await client.request<{
+        webChat?: { publicKey?: string }
+      }>('GET', '/company/mira-settings', { root: true })
+      const publicKey = settings?.webChat?.publicKey
+      if (!publicKey)
+        throw new Error(
+          'No widget exists yet — call update_mira_settings with any webChat field first; that mints the key without enabling anything.',
+        )
+      // The suite runs on the widget host (apps/next), not the API — it drives
+      // the real chat route. Several LLM conversations end to end, so the
+      // budget is deliberately generous.
+      const response = await fetch(`${client.nextUrl}/api/mira-widget/testdrive`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: publicKey }),
+        signal: AbortSignal.timeout(180_000),
+      })
+      if (response.status === 429)
+        throw new Error(
+          'The test drive is rate-limited to a few runs per hour and this hour’s budget is used up. Try again later — the saved configuration is unaffected.',
+        )
+      if (!response.ok)
+        throw new Error(`test drive failed (${response.status})`)
+      return (await response.json()) as unknown
+    },
+  },
+  {
+    name: 'verify_widget_install',
+    title: 'Verify the widget is live on a website',
+    description:
+      "Fetch a page of the customer's website and check it actually serves their Mira widget: the loader script AND their own embed key. The closing step of an install — run it after the user says they pasted the snippet, and celebrate only when it returns installed: true.",
+    schema: {
+      url: z
+        .string()
+        .url()
+        .describe('The page to check, e.g. https://example.com'),
+    },
+    readOnly: true,
+    run: async (client, { url }) => {
+      const target = new URL(url)
+      if (target.protocol !== 'http:' && target.protocol !== 'https:')
+        throw new Error('Only http(s) URLs can be checked.')
+      const settings = await client.request<{
+        webChat?: { publicKey?: string }
+      }>('GET', '/company/mira-settings', { root: true })
+      const publicKey = settings?.webChat?.publicKey ?? null
+      const response = await fetch(target, {
+        headers: { 'user-agent': 'meetergo-mcp-install-check' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!response.ok)
+        return {
+          installed: false,
+          checkedUrl: target.toString(),
+          error: `The page answered ${response.status} — check the URL is public.`,
+        }
+      // The snippet sits in the document HTML; a page bigger than this has
+      // other problems. Cap the read so a streaming endpoint can't hang us.
+      const html = (await response.text()).slice(0, 2_000_000)
+      const check = analyzeInstallHtml(html, publicKey)
+      return {
+        ...check,
+        checkedUrl: response.url,
+        hint: check.installed
+          ? undefined
+          : check.foundLoader
+            ? 'The loader script is there but with a different embed key — probably a snippet from another account or an old key. Re-paste the snippet from get_mira_widget_embed.'
+            : 'No widget script found in the page HTML. If the site builder injects scripts client-side (e.g. some tag managers), the widget may still work — otherwise paste the snippet from get_mira_widget_embed before </body>.',
+      }
+    },
   },
 ]

@@ -8,7 +8,7 @@ import { TOOLS, sanitizeMiraSettingsForPatch } from '../tools.js'
  */
 describe('meetergo MCP tool surface', () => {
   it('covers the API surface an agent needs, with no duplicate names', () => {
-    expect(TOOLS).toHaveLength(49)
+    expect(TOOLS).toHaveLength(56)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
   })
 
@@ -51,6 +51,7 @@ describe('meetergo MCP tool surface', () => {
     // means an agent books, cancels or deletes without anyone being asked.
     expect(writes).toEqual([
       'add_guest',
+      'answer_visitor_question',
       'book_appointment',
       'bulk_create_contacts',
       'cancel_appointment',
@@ -59,6 +60,7 @@ describe('meetergo MCP tool surface', () => {
       'create_data_field',
       'create_meeting_type',
       'create_one_time_booking_link',
+      'create_qualification_form',
       'create_routing_form',
       'create_webhook',
       'delete_contact',
@@ -137,6 +139,9 @@ describe('meetergo MCP tool surface', () => {
       'update_mira_settings',
       'restore_mira_settings',
       'crawl_company_website',
+      // Keyed by the question itself: answering the same one again replaces
+      // that answer, so there is no separate id to name.
+      'answer_visitor_question',
     ])
 
     for (const tool of TOOLS.filter(
@@ -683,6 +688,47 @@ describe('Mira & knowledge wire format', () => {
     expect(call.options.root).toBe(true)
   })
 
+  it('proposes a setup without writing anything', async () => {
+    const call = await callTool('propose_conversion_setup', {
+      url: 'https://makler.example',
+      useCase: 'support',
+    })
+    expect(call).toMatchObject({
+      method: 'POST',
+      path: '/knowledge/conversion-proposal',
+    })
+    expect(call.options.body).toEqual({
+      url: 'https://makler.example',
+      useCase: 'support',
+    })
+    expect(call.options.root).toBe(true)
+    // A proposal must never be a write: an agent has to be able to look at a
+    // site before anyone has agreed to anything.
+    expect(TOOLS.find((t) => t.name === 'propose_conversion_setup')?.readOnly).toBe(
+      true,
+    )
+  })
+
+  it('teaches an answer as a question/answer pair', async () => {
+    const call = await callTool('answer_visitor_question', {
+      question: 'Beraten Sie auch Gewerbekunden?',
+      answer: 'Ja, für Betriebe bis 50 Mitarbeitende.',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/knowledge/answer' })
+    expect(call.options.body).toEqual({
+      question: 'Beraten Sie auch Gewerbekunden?',
+      answer: 'Ja, für Betriebe bis 50 Mitarbeitende.',
+    })
+    expect(call.options.root).toBe(true)
+  })
+
+  it('reads insights with the window as a query param', async () => {
+    const call = await callTool('get_conversation_insights', { days: 30 })
+    expect(call).toMatchObject({ method: 'GET', path: '/web-chat/insights' })
+    expect(call.options.query).toEqual({ days: 30 })
+    expect(call.options.root).toBe(true)
+  })
+
   it('searches knowledge with query and clamped k', async () => {
     const call = await callTool('search_company_knowledge', {
       query: 'PKV Wechsel',
@@ -692,26 +738,80 @@ describe('Mira & knowledge wire format', () => {
     expect(call.options.body).toEqual({ query: 'PKV Wechsel', k: 5 })
     expect(call.options.root).toBe(true)
   })
+
+  it('creates a qualification form against the host-root knowledge route', async () => {
+    const call = await callTool('create_qualification_form', {
+      assistantName: 'Lena',
+      language: 'de',
+      meetingTypeId: 'mt-1',
+      questions: [
+        { label: 'Wie groß ist dein Team?', key: 'team_size', options: [] },
+      ],
+    })
+    expect(call).toMatchObject({
+      method: 'POST',
+      path: '/knowledge/qualification-form',
+    })
+    expect(call.options.root).toBe(true)
+    expect(call.options.body).toMatchObject({
+      assistantName: 'Lena',
+      meetingTypeId: 'mt-1',
+    })
+  })
+
+  it('derives setup status from settings + docs + meeting types, tolerating gated reads', async () => {
+    const tool = TOOLS.find((t) => t.name === 'get_setup_status')
+    if (!tool) throw new Error('missing get_setup_status')
+    const { client } = record({
+      '/company/mira-settings': {
+        assistantProfiles: [{ id: 'website-assistant' }],
+        webChat: { publicKey: 'k', enabled: false, allowedDomains: [] },
+      },
+      // /knowledge/documents resolves to {} (no documents key) and
+      // /meeting-type to {} (not an array) — both must read as zero, not throw.
+    })
+    const status = (await tool.run(client, {})) as {
+      stage: string
+      next: string | null
+    }
+    expect(status.stage).toBe('ready')
+    expect(status.next).toBe('bookable')
+  })
 })
 
 describe('release hygiene', () => {
   it('reports the version the package claims', async () => {
-    // The server hardcodes VERSION and the manifest carries its own. They are
-    // the same number in two files, which is a drift waiting to happen — the
-    // mirror shipped 0.1.1 while the handshake still announced 0.1.0. An MCP
-    // client showing the wrong server version makes every bug report wrong.
+    // The version used to be hardcoded in two entry points beside the manifest's
+    // own — a drift that already happened once (the bundle shipped 0.1.1 while
+    // the handshake announced 0.1.0, which makes every bug report wrong).
+    // VERSION now reads package.json at runtime, so this asserts the reading
+    // works in the layout the tests run in; the Docker image and the .mcpb both
+    // keep the manifest one directory above the entry, as npm does.
     const { readFileSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')
+    const { VERSION } = await import('../version.js')
     const pkg = JSON.parse(
       readFileSync(
         fileURLToPath(new URL('../../package.json', import.meta.url)),
         'utf8',
       ),
     ) as { version: string }
-    const source = readFileSync(
-      fileURLToPath(new URL('../index.ts', import.meta.url)),
-      'utf8',
+
+    expect(VERSION).toBe(pkg.version)
+  })
+
+  it('packs the extension at the same version as the package', async () => {
+    // The .mcpb manifest is the one copy that cannot read package.json at
+    // runtime: Claude Desktop shows its version in the install UI.
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const read = (relative: string) =>
+      JSON.parse(
+        readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8'),
+      ) as { version: string }
+
+    expect(read('../../mcpb/manifest.json').version).toBe(
+      read('../../package.json').version,
     )
-    expect(source).toContain(`const VERSION = '${pkg.version}'`)
   })
 })

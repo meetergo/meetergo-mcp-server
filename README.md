@@ -9,8 +9,8 @@ change anything. Both are useful and they do different jobs:
 
 | | Docs MCP | This server |
 |---|---|---|
-| Endpoint | `developer.meetergo.com/mcp` | runs locally over stdio |
-| Tools | `SearchMeetergo` | 40 scheduling, CRM and config tools |
+| Endpoint | `developer.meetergo.com/mcp` | `mcp.meetergo.com/mcp`, or `npx` over stdio |
+| Tools | `SearchMeetergo` | 56 scheduling, CRM, Mira and config tools |
 | Can it book? | No | **Yes** |
 | Use it to | write an integration | be the integration |
 
@@ -18,7 +18,31 @@ change anything. Both are useful and they do different jobs:
 
 Create a Personal Access Token at
 [my.meetergo.com/integrations](https://my.meetergo.com/integrations) — it looks
-like `rgo-…` — then add the server to your MCP client:
+like `rgo-…` — then either point your client at the hosted server or run this
+package locally over stdio. The token works on every plan, including Free.
+
+### Hosted
+
+```
+https://mcp.meetergo.com/mcp
+```
+
+Streamable HTTP, authenticated with `Authorization: Bearer rgo-…`. The path
+matters: `mcp.meetergo.com` alone is not the endpoint. For clients that take a
+remote URL and headers:
+
+```json
+{
+  "mcpServers": {
+    "meetergo": {
+      "url": "https://mcp.meetergo.com/mcp",
+      "headers": { "Authorization": "Bearer rgo-your_token_here" }
+    }
+  }
+}
+```
+
+### Local (npx)
 
 ```json
 {
@@ -34,6 +58,29 @@ like `rgo-…` — then add the server to your MCP client:
 
 Works with Claude Desktop, Claude Code, Cursor, or anything else that speaks
 MCP.
+
+### Scope the token
+
+When you create the token you can limit it to the capabilities the agent
+actually needs (scheduling, contacts and deals, Mira, forms, account). A limited
+token is refused on everything outside those groups, including reads, so give it
+every group whose tools you intend to use — a Mira-only token cannot book, and a
+scheduling-only token cannot read your knowledge base.
+
+### Signing in instead of pasting a token
+
+Not yet. The hosted endpoint authenticates with a Personal Access Token or a
+Platform API Key today, and nothing else. OAuth sign-in is not enabled on it, so
+a host that probes for it is told so — `/.well-known/oauth-protected-resource`
+answers 404 — rather than being walked into an authorization flow that cannot
+finish.
+
+When it is enabled it will need no credential from support: the connector takes
+a public client id published on this page, with no client secret. There is no
+dynamic client registration either way.
+
+A Personal Access Token works in every MCP client, on every plan including Free.
+That is what the rest of this page assumes.
 
 ### Acting for another user
 
@@ -56,17 +103,61 @@ startup rather than letting you find out mid-booking:
 - a Personal Access Token **must not** — it always acts as its owner, and the
   API rejects the header outright.
 
+Against the hosted endpoint the acting user travels as the
+`X-Meetergo-Api-User-Id` request header instead of an environment variable; the
+same two rules apply, and sending it with a Personal Access Token is refused.
+
 ### Environment
+
+The stdio entry (`meetergo-mcp`, what `npx` runs):
 
 | Variable | Required | Purpose |
 |---|---|---|
 | `MEETERGO_TOKEN` | **yes** | `rgo-…` Personal Access Token or `ak_live:…` Platform API Key |
 | `MEETERGO_USER_ID` | with a Platform API Key | The user to act as |
 | `MEETERGO_API_URL` | | API base override, default `https://api.meetergo.com/v4` |
+| `MEETERGO_NEXT_URL` | | Booking-page host rendered into widget install snippets, default `https://cal.meetergo.com` |
 | `MEETERGO_TIMEOUT_MS` | | Per-request timeout, default `30000` |
 
-Rate limits and transient upstream errors (429, 502, 503, 504) are retried up to
-three times, honouring `Retry-After` where the API sends one.
+### Running the hosted entry yourself
+
+The package also ships `meetergo-mcp-http`, the Streamable HTTP entry that runs
+behind `https://mcp.meetergo.com/mcp`. Credentials arrive per request in the
+`Authorization` header rather than from the environment, so one process serves
+any number of accounts — `MEETERGO_TOKEN` and `MEETERGO_USER_ID` are not read
+here. It reads:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PORT` | | Listen port, default `8080` |
+| `MEETERGO_API_URL` | | API base override, default `https://api.meetergo.com/v4` |
+| `MEETERGO_NEXT_URL` | | Booking-page host rendered into widget install snippets, default `https://cal.meetergo.com` |
+| `MEETERGO_DASHBOARD_URL` | | Dashboard host used for upgrade links in plan-limit errors, default `https://my.meetergo.com` |
+| `MCP_PUBLIC_URL` | | This server's public URL, default `http://localhost:$PORT`. Only its **origin** is used: origin + `/mcp` is the resource identifier — the `resource` field of the discovery document, and the value an OAuth token must carry in `aud`. `https://host`, `https://host/` and `https://host/mcp` are therefore the same setting. Anything that is not an absolute http(s) URL fails at startup |
+| `OAUTH_ISSUER` | all three or none | OpenID issuer of the authorization server, e.g. `https://login.meetergo.com/realms/meetergo`. Must be absolute and **https** — the exchange posts this server's client secret and the user's token to it — or the process refuses to start. A trailing slash is trimmed |
+| `OAUTH_CLIENT_ID` | all three or none | Confidential client this server exchanges tokens into (RFC 8693) |
+| `OAUTH_CLIENT_SECRET` | all three or none | That client's secret |
+
+**The three `OAUTH_*` variables are all-or-nothing.** Set all three and an
+inbound access token is validated first — issuer, `aud`, `typ: Bearer`, RS256
+signature against the issuer's JWKS, expiry — and only then exchanged for a
+separate token for the upstream API. The MCP spec forbids forwarding the token a
+client handed you, so the exchange is not an optimisation; it is the only path.
+
+Set none and the process is bearer-token-only: Personal Access Tokens and
+Platform API Keys work, both `.well-known` paths answer 404, the 401 challenge
+carries no `resource_metadata`, and an OAuth token is refused rather than passed
+upstream.
+
+Set one or two and you get the bearer-token-only behaviour above, not a partial
+OAuth — plus a warning log, `oauth_disabled_incomplete_config`, naming the
+variables that are missing.
+
+### Retries
+
+Both entries behave the same here. Rate limits and transient upstream errors
+(429, 502, 503, 504) get up to three attempts in total (so two retries),
+honouring `Retry-After` where the API sends one.
 
 Retries are **not** applied blindly. A booking or cancellation that fails
 ambiguously — a timeout, a dropped connection, a 502 — may already have been
@@ -74,9 +165,36 @@ applied by the API, and there is no idempotency key to make a second attempt
 safe. Only reads are retried on those; writes are retried solely on a 429, the
 one response that states the request was never processed.
 
+## One-prompt onboarding
+
+If your client supports MCP prompts, run **`meetergo: onboard`**. Otherwise
+paste this:
+
+> Set up meetergo for my company. Call get_me and get_setup_status first and
+> tell me what already exists. Then analyse my website with
+> propose_conversion_setup and present the proposed setup — meeting types,
+> qualification questions, the website assistant. Build nothing until I approve.
+> After I approve: create what's missing, turn the questions into a routing form
+> with create_qualification_form, crawl my site, then PROVE it works with
+> run_test_drive and show me the verdicts. Finish by giving me the install
+> snippet, and verify with verify_widget_install after I've pasted it.
+
+The agent audits what exists, proposes, waits for your yes, builds, and then
+**shows you scripted visitors booking through your own assistant** before
+anything goes live. A second prompt, **`meetergo: weekly-review`**, pulls last
+week's conversations and offers to teach the assistant every answer it missed.
+
+## Plan limits
+
+Every tool reports plan walls structurally: which limit was hit and where
+upgrading happens, so your agent explains the situation instead of failing
+vaguely. `get_me` also returns a `plan` block (tier, limits) so a good agent
+warns you *before* starting something your plan cannot finish. Connecting the
+server itself is never gated — a token from any plan, including Free, works.
+
 ## Tools
 
-40 tools, covering scheduling end to end. **Scheduling** is the loop most agents
+56 tools, covering scheduling end to end. **Scheduling** is the loop most agents
 live in; the rest is there so an agent never has to fall back to raw REST.
 
 ### Scheduling
@@ -144,6 +262,35 @@ live in; the rest is there so an agent never has to fall back to raw REST.
 | `update_contact` | **yes** | Edit a contact |
 | `bulk_create_contacts` | **yes** | Import many at once (3 calls per min) |
 | `delete_contact` | **destructive** | Remove a contact and its form answers |
+
+### Mira, the website assistant
+
+Everything needed to take a website from "no assistant" to a live one that
+answers from the company's own pages and books meetings.
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `get_setup_status` | | The launch checklist: what exists, what's missing, the next move |
+| `get_mira_settings` | | The whole assistant config — read before changing it |
+| `update_mira_settings` | **destructive** | Change it; returns the previous settings so you can put them back |
+| `restore_mira_settings` | **destructive** | Restore a snapshot taken from an earlier update |
+| `propose_conversion_setup` | | Read a crawled site and propose an assistant, qualification and booking setup |
+| `create_qualification_form` | **yes** | Turn proposed questions into a real, editable routing form |
+| `run_test_drive` | | Scripted visitors talk to the saved assistant; verdicts + transcripts back |
+| `get_mira_widget_embed` | | The public key, the embed snippet, and a preview URL |
+| `verify_widget_install` | | Fetch a page of the customer's site and confirm it serves THEIR widget |
+| `answer_visitor_question` | **yes** | Teach the assistant an answer it was missing |
+| `get_conversation_insights` | | What visitors asked and where the assistant had no answer |
+
+### Knowledge base
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `crawl_company_website` | **yes** | Ingest a website so the assistant can answer from it |
+| `get_crawl_status` | | Progress of a running crawl |
+| `list_knowledge_documents` | | What has been ingested |
+| `delete_knowledge_document` | **destructive** | Remove a document; the assistant stops citing it |
+| `search_company_knowledge` | | Retrieve the passages a question would be answered from |
 
 ### Webhooks
 

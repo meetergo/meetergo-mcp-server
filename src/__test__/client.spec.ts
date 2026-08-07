@@ -2,6 +2,7 @@ import {
   isPlatformApiKey,
   MeetergoApiError,
   MeetergoClient,
+  MeetergoPlanLimitError,
   parseRetryAfter,
 } from '../client.js'
 
@@ -273,6 +274,67 @@ describe('MeetergoClient', () => {
       await expect(
         client().request('PATCH', '/appointment/ap-1/guest'),
       ).resolves.toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('plan limits', () => {
+  it('turns PLAN_LIMIT_REACHED into a structured error with an upgrade door', async () => {
+    const { restore } = stubFetch([
+      new Response(
+        JSON.stringify({
+          message: 'Knowledge page limit reached',
+          code: 'PLAN_LIMIT_REACHED',
+          feature: 'knowledgePageLimit',
+        }),
+        { status: 403 },
+      ),
+    ])
+    try {
+      await expect(
+        client().request('POST', '/knowledge/crawl', { root: true }),
+      ).rejects.toThrow(MeetergoPlanLimitError)
+    } finally {
+      restore()
+    }
+  })
+
+  it('names the limit, the upgrade URL, and the no-pitch rule in the message', async () => {
+    const { restore } = stubFetch([
+      new Response(
+        JSON.stringify({ code: 'PLAN_LIMIT_REACHED', feature: 'seats' }),
+        { status: 403 },
+      ),
+    ])
+    try {
+      await client().request('POST', '/x', { root: true })
+      throw new Error('should have thrown')
+    } catch (error) {
+      const err = error as MeetergoPlanLimitError
+      expect(err.feature).toBe('seats')
+      expect(err.upgradeUrl).toContain('/admin/subscription?feature=seats')
+      expect(err.upgradeUrl).toContain('utm_source=mcp')
+      expect(err.message).toMatch(/do not turn it into a pitch/)
+    } finally {
+      restore()
+    }
+  })
+
+  it('leaves ordinary errors untouched', async () => {
+    const { restore } = stubFetch([
+      new Response(JSON.stringify({ message: 'slot no longer available' }), {
+        status: 409,
+      }),
+    ])
+    try {
+      await expect(client().request('POST', '/x')).rejects.toThrow(
+        MeetergoApiError,
+      )
+      await expect(client().request('POST', '/x')).rejects.not.toThrow(
+        MeetergoPlanLimitError,
+      )
     } finally {
       restore()
     }

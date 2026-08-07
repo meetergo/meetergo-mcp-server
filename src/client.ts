@@ -32,13 +32,40 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_RETRY_DELAY_MS = 20_000
 
 /**
- * Platform API Keys look like `ak_live:<uuid>:<secret>` and can act for any user
- * in the company; Personal Access Tokens (`rgo-…`) always act as their owner and
- * are rejected outright if they send the impersonation header. Deciding from the
- * token shape means MEETERGO_USER_ID cannot be set into a guaranteed 403.
+ * The two prefixes the api's auth guard routes on
+ * (apps/api/src/app/auth/services/auth.guard.ts): a Personal Access Token is
+ * `rgo-` + 32 characters, a Platform API Key is `ak_live:<uuid>:<secret>`.
+ * Anything else the guard hands to its JWT verifier.
+ */
+const PERSONAL_ACCESS_TOKEN_PREFIX = 'rgo-'
+const PLATFORM_API_KEY_PREFIX = 'ak_live:'
+
+/**
+ * Platform API Keys can act for any user in the company; Personal Access Tokens
+ * always act as their owner and are rejected outright if they send the
+ * impersonation header. Deciding from the token shape means MEETERGO_USER_ID
+ * cannot be set into a guaranteed 403.
  */
 export function isPlatformApiKey(token: string): boolean {
-  return token.startsWith('ak_live:')
+  return token.startsWith(PLATFORM_API_KEY_PREFIX)
+}
+
+/**
+ * A credential meetergo issued and the api verifies itself — the only kind that
+ * may travel upstream exactly as the caller sent it.
+ *
+ * An ALLOWLIST, and that direction is the whole point. The api routes on these
+ * two prefixes and treats every other string as a JWT, so "not one of ours" and
+ * "belongs on the validate-then-exchange path" are the same statement. Phrased
+ * as a denylist instead — the previous `looksLikeJwt`, "anything that is not
+ * exactly three non-empty dot-separated segments is ours" — a compact JWE (five
+ * segments), a four-segment token or `a..c` all counted as ours and reached the
+ * api untouched, which is the token passthrough the MCP spec forbids outright.
+ */
+export function isMeetergoCredential(token: string): boolean {
+  return (
+    token.startsWith(PERSONAL_ACCESS_TOKEN_PREFIX) || isPlatformApiKey(token)
+  )
 }
 
 export class MeetergoApiError extends Error {
@@ -48,6 +75,32 @@ export class MeetergoApiError extends Error {
   ) {
     super(`meetergo API ${status}: ${detail}`)
     this.name = 'MeetergoApiError'
+  }
+}
+
+/** Dashboard root — where plan upgrades and token management live. */
+export const DEFAULT_DASHBOARD_URL = 'https://my.meetergo.com'
+
+/**
+ * A wall with a door: the API refused because the current plan's allowance
+ * for `feature` is used up. Carries everything an agent needs to explain the
+ * situation honestly — which limit, and where upgrading happens — plus the
+ * behavioural rule: this is only worth mentioning when the user actually
+ * asked for the blocked action. An agent that opens with upgrade talk before
+ * anything works is a worse salesperson than one that builds first.
+ */
+export class MeetergoPlanLimitError extends MeetergoApiError {
+  constructor(
+    status: number,
+    detail: string,
+    readonly feature: string,
+    readonly upgradeUrl: string,
+  ) {
+    super(status, detail)
+    this.name = 'MeetergoPlanLimitError'
+    this.message =
+      `Plan limit reached (${feature}): ${detail} ` +
+      `The user can upgrade at ${upgradeUrl} — mention this only because their requested action is blocked; do not turn it into a pitch.`
   }
 }
 
@@ -66,6 +119,8 @@ export interface MeetergoClientOptions {
   baseUrl?: string
   timeoutMs?: number
   userAgent?: string
+  /** Dashboard root, rendered into upgrade links. Override for local stacks. */
+  dashboardUrl?: string
   /**
    * Root of the apps/next deployment that hosts the Mira widget loader
    * (`/mira-widget.js`) and iframe page. Only used to RENDER install snippets
@@ -120,6 +175,7 @@ export class MeetergoClient {
   private readonly timeoutMs: number
   private readonly userAgent: string
   readonly nextUrl: string
+  readonly dashboardUrl: string
 
   constructor({
     token,
@@ -128,6 +184,7 @@ export class MeetergoClient {
     timeoutMs,
     userAgent,
     nextUrl,
+    dashboardUrl,
   }: MeetergoClientOptions) {
     this.token = token
     this.userId = userId
@@ -138,6 +195,10 @@ export class MeetergoClient {
     this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.userAgent = userAgent ?? 'meetergo-mcp'
     this.nextUrl = (nextUrl ?? DEFAULT_NEXT_URL).replace(/\/+$/, '')
+    this.dashboardUrl = (dashboardUrl ?? DEFAULT_DASHBOARD_URL).replace(
+      /\/+$/,
+      '',
+    )
   }
 
   private headers(): Record<string, string> {
@@ -223,15 +284,34 @@ export class MeetergoClient {
         // "slot no longer available" but not on a bare 409.
         const detail = await response.text().catch(() => '')
         let message = detail.slice(0, 400)
+        let code: string | undefined
+        let feature: string | undefined
         try {
-          const parsed = JSON.parse(detail) as { message?: string | string[] }
+          const parsed = JSON.parse(detail) as {
+            message?: string | string[]
+            code?: string
+            feature?: string
+          }
           if (parsed?.message) {
             message = Array.isArray(parsed.message)
               ? parsed.message.join('; ')
               : parsed.message
           }
+          code = parsed?.code
+          feature = parsed?.feature
         } catch {
           // Not JSON — the truncated body is the best detail available.
+        }
+        // The API names plan walls structurally; pass that structure through
+        // so the agent can explain the limit and the way past it, instead of
+        // reporting a generic failure.
+        if (code === 'PLAN_LIMIT_REACHED' && feature) {
+          throw new MeetergoPlanLimitError(
+            response.status,
+            message || response.statusText,
+            feature,
+            `${this.dashboardUrl}/admin/subscription?feature=${encodeURIComponent(feature)}&utm_source=mcp`,
+          )
         }
         throw new MeetergoApiError(
           response.status,
