@@ -70,6 +70,10 @@ describe('meetergo MCP tool surface', () => {
       'delete_webhook',
       'reschedule_appointment',
       'restore_mira_settings',
+      // Not a data mutation an operator would name, but it persists the
+      // checklist's test-drive verdict and spends real model budget — a host
+      // that confirms expensive calls with the human must get the chance.
+      'run_test_drive',
       'send_quick_email',
       'send_routing_form',
       'update_appointment_notes',
@@ -96,9 +100,15 @@ describe('meetergo MCP tool surface', () => {
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
+      // Moves a real booking and notifies attendees — the old slot is gone.
+      'reschedule_appointment',
       // Not deletes, but both overwrite the live assistant configuration a
       // company's website widget is answering from.
       'restore_mira_settings',
+      // Both REPLACE what is there (the note wholesale, the tag list
+      // wholesale) — a careless call silently discards data.
+      'update_appointment_notes',
+      'update_contact',
       'update_mira_settings',
       // Not a delete, but its qualifier sync removes whatever you leave out.
       'update_routing_form',
@@ -142,6 +152,9 @@ describe('meetergo MCP tool surface', () => {
       // Keyed by the question itself: answering the same one again replaces
       // that answer, so there is no separate id to name.
       'answer_visitor_question',
+      // Runs against the company's one saved widget config; the only thing it
+      // writes is that run's own verdict.
+      'run_test_drive',
     ])
 
     for (const tool of TOOLS.filter(

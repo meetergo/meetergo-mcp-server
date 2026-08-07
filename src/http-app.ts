@@ -13,6 +13,7 @@
  * that credential, so one pod serves any number of tenants and horizontal
  * scaling needs no session store.
  */
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { isPlatformApiKey, MeetergoClient } from './client.js'
@@ -66,27 +67,56 @@ export interface McpAppConfig {
  */
 const RATE_LIMIT = 120
 const RATE_WINDOW_MS = 60_000
+/**
+ * Ceiling on distinct keys the limiter will track. The limiter runs BEFORE
+ * any token is validated, so the key space is attacker-chosen: without a cap,
+ * rotating garbage tokens both dodges the per-token window and grows the map
+ * until the 187 MB heap is gone. At the cap, unknown keys are simply refused —
+ * callers already being tracked (every legitimate, repeating credential) keep
+ * working through the flood.
+ */
+const RATE_MAX_KEYS = 10_000
 
-function createRateLimiter(): (token: string) => boolean {
+/**
+ * Requests larger than this never reach the JSON parse. The SDK's streamable
+ * transport buffers the whole body with no limit of its own, and this pod runs
+ * one replica with a 256 MB ceiling — without this check, one oversized POST
+ * (sent with any Bearer string at all) is a denial of service. 1 MB is two
+ * orders of magnitude above any real MCP request.
+ */
+const MAX_BODY_BYTES = 1_000_000
+
+function createRateLimiter(): (key: string) => boolean {
   const buckets = new Map<string, { count: number; resetAt: number }>()
-  // The map only grows while distinct tokens keep arriving; sweep expired
-  // windows so a scan of dead tokens cannot become a slow leak.
+  // The map only grows while distinct keys keep arriving; sweep expired
+  // windows so a scan of dead keys cannot become a slow leak.
   setInterval(() => {
     const now = Date.now()
     for (const [key, bucket] of buckets)
       if (bucket.resetAt <= now) buckets.delete(key)
   }, RATE_WINDOW_MS).unref()
 
-  return (token) => {
+  return (key) => {
     const now = Date.now()
-    const bucket = buckets.get(token)
+    const bucket = buckets.get(key)
     if (!bucket || bucket.resetAt <= now) {
-      buckets.set(token, { count: 1, resetAt: now + RATE_WINDOW_MS })
+      if (!bucket && buckets.size >= RATE_MAX_KEYS) return true
+      buckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS })
       return false
     }
     bucket.count += 1
     return bucket.count > RATE_LIMIT
   }
+}
+
+/**
+ * Rate-limit key for a credential nobody has validated yet: a digest, never
+ * the token itself. Hashing keeps plaintext credentials out of a long-lived
+ * map (a heap dump of the limiter must not be a token list), and makes the
+ * key a fixed 32 bytes no matter what arrived in the header.
+ */
+function rateKey(token: string): string {
+  return createHash('sha256').update(token).digest('base64')
 }
 
 function setCors(res: ServerResponse): void {
@@ -227,10 +257,32 @@ export function createRequestListener(config: McpAppConfig): RequestListener {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    // Reject oversized bodies before anything buffers them. The declared
+    // length is trustworthy as a ceiling — Node's HTTP parser enforces
+    // content-length framing, so a request cannot deliver more body than it
+    // declared. What it could do is declare nothing (chunked), which is why a
+    // bodied request without a length is refused outright: every real MCP
+    // client POSTs a complete JSON document with content-length set.
+    if (req.method === 'POST') {
+      const declaredLength = Number(req.headers['content-length'])
+      if (!Number.isFinite(declaredLength)) {
+        return json(res, 411, {
+          error: 'length_required',
+          detail: 'POST requests must declare a Content-Length.',
+        })
+      }
+      if (declaredLength > MAX_BODY_BYTES) {
+        return json(res, 413, {
+          error: 'payload_too_large',
+          detail: `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
+        })
+      }
+    }
+
     const auth = req.headers.authorization
     const token = auth?.startsWith('Bearer ') ? auth.slice(7).trim() : undefined
     if (!token) return unauthorized(res, config)
-    if (rateLimited(token)) {
+    if (rateLimited(rateKey(token))) {
       res.setHeader('Retry-After', '60')
       return json(res, 429, { error: 'rate_limited', detail: 'Slow down.' })
     }

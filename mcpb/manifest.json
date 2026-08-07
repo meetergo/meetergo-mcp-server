@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "meetergo",
   "display_name": "meetergo",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Let your AI run your scheduling: set up meetergo from your website, book and reschedule meetings, qualify leads, and manage the Mira website assistant.",
   "long_description": "Connects Claude to your meetergo account with a Personal Access Token. 56 tools cover the whole loop: availability, booking, rescheduling, contacts and CRM, meeting types, routing forms, webhooks — and the Mira website assistant, from analysing your website and proposing a complete setup to proving it works with scripted test visitors. Try the built-in 'onboard' prompt: Claude audits what exists, proposes a setup, builds it after your approval, and hands you the install snippet. Works on every meetergo plan, including Free. This bundle runs locally over stdio and authenticates with the token you paste at install time. The same tools are served over Streamable HTTP at https://mcp.meetergo.com/mcp, with the same token, for clients that take a remote URL and an Authorization header.",
   "author": {

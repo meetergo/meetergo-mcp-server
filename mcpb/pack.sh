@@ -20,10 +20,10 @@ test -f "$PKG_DIR/dist/index.js" || {
 mkdir -p "$(dirname "$OUT")"
 cp "$PKG_DIR/mcpb/manifest.json" "$PKG_DIR/mcpb/icon.png" "$STAGE/"
 cp -r "$PKG_DIR/dist" "$STAGE/dist"
-cp "$PKG_DIR/package.json" "$STAGE/"
-# Production deps only — the bundle must run on a machine that has never
-# heard of this repo.
-(cd "$STAGE" && npm install --omit=dev --no-audit --no-fund >/dev/null)
+cp "$PKG_DIR/package.json" "$PKG_DIR/package-lock.json" "$STAGE/"
+# Production deps only, pinned by the lockfile — the bundle must run on a
+# machine that has never heard of this repo, with exactly the tree we tested.
+(cd "$STAGE" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null)
 npx -y @anthropic-ai/mcpb pack "$STAGE" "$OUT"
 rm -rf "$STAGE"
 echo "packed: $OUT"

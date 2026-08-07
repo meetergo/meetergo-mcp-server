@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { MeetergoClient } from './client.js'
+import { fetchPublicUrl } from './safe-fetch.js'
 import {
   analyzeInstallHtml,
   deriveSetupStatus,
@@ -37,6 +38,15 @@ export interface ToolDefinition {
   readOnly: boolean
   /** Set on tools that remove or irreversibly alter something. */
   destructive?: boolean
+  /**
+   * Names the origin of third-party text inside this tool's results (website
+   * visitors, crawled pages, model output derived from them). The server wraps
+   * such results in an explicit untrusted-content fence so the calling agent
+   * treats them as data, never as instructions — the tool surface next to this
+   * one includes deletes and sends, and "a visitor question that says to call
+   * them" is exactly the attack this product category keeps shipping.
+   */
+  untrustedSource?: string
   /**
    * The MCP SDK infers handler arguments from the zod shape as a record with an
    * `any` index signature. Mirroring that is what lets one registration loop in
@@ -503,6 +513,8 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Schedule outside available hours or over an existing booking'),
     },
     readOnly: false,
+    // Moves a real booking and notifies the attendees — the old slot is gone.
+    destructive: true,
     run: (client, { appointmentId, ...body }) =>
       client.request('POST', `/appointment/${appointmentId}/reschedule`, {
         body,
@@ -607,6 +619,8 @@ export const TOOLS: ToolDefinition[] = [
       note: z.string(),
     },
     readOnly: false,
+    // Replaces, not appends — whatever note was there is overwritten.
+    destructive: true,
     run: (client, { appointmentId, note }) =>
       client.request('PATCH', `/appointment/${appointmentId}/notes`, {
         body: { note },
@@ -704,6 +718,8 @@ export const TOOLS: ToolDefinition[] = [
       accountOwnerId: z.string().optional(),
     },
     readOnly: false,
+    // Tags replace rather than merge — a careless call silently drops data.
+    destructive: true,
     run: (client, { contactId, ...body }) =>
       client.request('PATCH', `/crm/${contactId}`, { body, root: true }),
   },
@@ -1422,10 +1438,14 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Restrict the pages read to this 2-letter language, e.g. "de"'),
     },
     readOnly: true,
+    untrustedSource: 'the analysed website',
     run: (client, body) =>
       client.request('POST', '/knowledge/conversion-proposal', {
         body: definedOnly(body),
         root: true,
+        // Crawls a site and runs a model over it — the endpoint legitimately
+        // takes longer than the default request budget.
+        timeoutMs: 150_000,
       }),
   },
   {
@@ -1456,6 +1476,7 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Window in days, 1-90. Defaults to 7.'),
     },
     readOnly: true,
+    untrustedSource: 'website visitors',
     run: (client, { days }) =>
       client.request('GET', '/web-chat/insights', {
         query: definedOnly({ days }),
@@ -1472,6 +1493,7 @@ export const TOOLS: ToolDefinition[] = [
       k: z.number().int().min(1).max(10).optional().describe('Chunks to return, default 5'),
     },
     readOnly: true,
+    untrustedSource: 'crawled website pages',
     run: (client, body) =>
       client.request('POST', '/knowledge/search', {
         body: definedOnly(body),
@@ -1558,9 +1580,14 @@ export const TOOLS: ToolDefinition[] = [
     name: 'run_test_drive',
     title: 'Prove the assistant works (scripted visitors)',
     description:
-      'Send scripted visitors at the saved assistant — a buyer who books, a lead who asks for a callback, an adversary probing for invented promises — and return pass/fail verdicts with full transcripts. Runs in preview mode: nothing is saved, no emails go out, and the widget does not need to be live. Takes about a minute; rate-limited to a few runs per hour. This is the proof step: show the user the verdicts instead of telling them it works.',
+      'Send scripted visitors at the saved assistant — a buyer who books, a lead who asks for a callback, an adversary probing for invented promises — and return pass/fail verdicts with full transcripts. Runs in preview mode: no bookings are created, no emails go out, and the widget does not need to be live; the result is stored so the launch checklist can show it. Takes about a minute; rate-limited to a few runs per hour. This is the proof step: show the user the verdicts instead of telling them it works.',
     schema: {},
-    readOnly: true,
+    // Not readOnly: the verdict is persisted (it is what get_setup_status
+    // reports as the test-drive step), and each call spends real model budget.
+    // A host that wants to confirm expensive calls with the human should get
+    // the chance to.
+    readOnly: false,
+    untrustedSource: 'simulated visitor conversations',
     run: async (client) => {
       const settings = await client.request<{
         webChat?: { publicKey?: string }
@@ -1601,28 +1628,29 @@ export const TOOLS: ToolDefinition[] = [
     },
     readOnly: true,
     run: async (client, { url }) => {
-      const target = new URL(url)
-      if (target.protocol !== 'http:' && target.protocol !== 'https:')
-        throw new Error('Only http(s) URLs can be checked.')
       const settings = await client.request<{
         webChat?: { publicKey?: string }
       }>('GET', '/company/mira-settings', { root: true })
       const publicKey = settings?.webChat?.publicKey ?? null
-      const response = await fetch(target, {
-        headers: { 'user-agent': 'meetergo-mcp-install-check' },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20_000),
+      // fetchPublicUrl resolves the hostname itself and refuses anything
+      // non-public, per redirect hop — this tool takes an arbitrary URL from
+      // whatever the agent read, and it runs both on our pod and on the
+      // user's machine. Neither may be turned into a proxy to localhost,
+      // cloud metadata, or an intranet.
+      const response = await fetchPublicUrl(url, {
+        timeoutMs: 20_000,
+        // The snippet sits in the document HTML; a page bigger than this has
+        // other problems. Streamed with a hard stop, not buffer-then-slice.
+        maxBytes: 2_000_000,
+        userAgent: 'meetergo-mcp-install-check',
       })
       if (!response.ok)
         return {
           installed: false,
-          checkedUrl: target.toString(),
+          checkedUrl: response.url,
           error: `The page answered ${response.status} — check the URL is public.`,
         }
-      // The snippet sits in the document HTML; a page bigger than this has
-      // other problems. Cap the read so a streaming endpoint can't hang us.
-      const html = (await response.text()).slice(0, 2_000_000)
-      const check = analyzeInstallHtml(html, publicKey)
+      const check = analyzeInstallHtml(response.body, publicKey)
       return {
         ...check,
         checkedUrl: response.url,

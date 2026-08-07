@@ -135,6 +135,12 @@ export interface RequestOptions {
   body?: unknown
   /** Target the host root instead of the versioned base — see DEFAULT_BASE_URL. */
   root?: boolean
+  /**
+   * Per-request budget for the few endpoints that legitimately run long
+   * (site analysis). Everything else keeps the client default — a stalled
+   * request should fail fast, not inherit the slowest tool's patience.
+   */
+  timeoutMs?: number
 }
 
 function sleep(ms: number): Promise<void> {
@@ -238,6 +244,7 @@ export class MeetergoClient {
     // ambiguous failure — a timeout, a dropped connection, or a 502/503/504,
     // any of which can follow a mutation the server already applied.
     const isSafeMethod = method === 'GET'
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs
 
     let lastError: Error | undefined
 
@@ -254,11 +261,11 @@ export class MeetergoClient {
               : JSON.stringify(options.body),
           // Without this a stalled connection hangs the tool call forever, and
           // the MCP host has no way to cancel it — the agent simply stops.
-          signal: AbortSignal.timeout(this.timeoutMs),
+          signal: AbortSignal.timeout(timeoutMs),
         })
       } catch (error: unknown) {
         // Ambiguous by definition: the request may or may not have been applied.
-        lastError = asTransportError(error, this.timeoutMs)
+        lastError = asTransportError(error, timeoutMs)
         if (isSafeMethod && !isFinalAttempt) {
           await sleep(500 * 2 ** attempt)
           continue
@@ -328,7 +335,7 @@ export class MeetergoClient {
       try {
         text = await response.text()
       } catch (error: unknown) {
-        lastError = asTransportError(error, this.timeoutMs)
+        lastError = asTransportError(error, timeoutMs)
         if (isSafeMethod && !isFinalAttempt) {
           await sleep(500 * 2 ** attempt)
           continue

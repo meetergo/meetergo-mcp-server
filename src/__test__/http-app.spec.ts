@@ -365,3 +365,108 @@ describe('protected resource metadata', () => {
     })
   })
 })
+
+describe('request-size ceiling', () => {
+  it('refuses a body whose declared length exceeds the cap, before auth', async () => {
+    const upstream = stubUpstream()
+    try {
+      await withServer({}, async (base) => {
+        // node:http, not fetch — fetch corrects a forged content-length, and
+        // the attacker this guards against does not. Declared, not sent: the
+        // refusal must come from the header alone, without the server waiting
+        // for (or buffering) a single byte.
+        const { request } = await import('node:http')
+        const status = await new Promise<number>((resolve, reject) => {
+          const req = request(
+            `${base}/mcp`,
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: 'Bearer rgo-whatever',
+                'content-length': String(50_000_000),
+              },
+            },
+            (res) => {
+              res.resume()
+              const status = res.statusCode ?? 0
+              // The request body will never come, so the socket would idle
+              // open and wedge server.close() — tear it down ourselves.
+              res.on('end', () => {
+                req.destroy()
+                resolve(status)
+              })
+            },
+          )
+          req.on('error', reject)
+          // Flush headers only; the body never comes.
+          req.flushHeaders()
+        })
+        expect(status).toBe(413)
+        // Nothing may have reached the api for a request this malformed.
+        expect(upstream.calls).toHaveLength(0)
+      })
+    } finally {
+      upstream.restore()
+    }
+  })
+
+  it('refuses a bodied request that declares no length at all', async () => {
+    await withServer({}, async (base) => {
+      // A chunked body is the way around a declared-length cap; the SDK's
+      // transport would buffer it without limit, so it never gets there.
+      const response = await fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer rgo-whatever',
+        },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{}'))
+            controller.close()
+          },
+        }),
+        // duplex is required for streamed request bodies; cast rather than a
+        // suppression directive, because only some TS lib versions type the
+        // field and a directive is itself an error on the ones that do.
+        ...({ duplex: 'half' } as object),
+      })
+      expect(response.status).toBe(411)
+    })
+  })
+
+  it('leaves an ordinary tool call unaffected', async () => {
+    const upstream = stubUpstream()
+    try {
+      await withServer({}, async (base) => {
+        const response = await fetch(`${base}/mcp`, toolCall('rgo-token'))
+        expect(response.status).toBe(200)
+      })
+    } finally {
+      upstream.restore()
+    }
+  })
+})
+
+describe('rate limiting', () => {
+  it('throttles a repeating credential and says when to come back', async () => {
+    const upstream = stubUpstream()
+    try {
+      await withServer({}, async (base) => {
+        let limited: Response | undefined
+        for (let i = 0; i < 130; i++) {
+          const response = await fetch(`${base}/mcp`, toolCall('rgo-same'))
+          if (response.status === 429) {
+            limited = response
+            break
+          }
+        }
+        expect(limited, 'never rate-limited').toBeDefined()
+        expect(limited?.headers.get('retry-after')).toBe('60')
+      })
+    } finally {
+      upstream.restore()
+    }
+  })
+})

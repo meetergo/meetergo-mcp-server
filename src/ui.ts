@@ -109,7 +109,9 @@ export const UPGRADE_CARD_HTML = `<!doctype html>
 <script>
   const data = window.openai && window.openai.toolOutput;
   const limit = data && data.planLimit ? data.planLimit : null;
-  if (limit && limit.upgradeUrl) {
+  // toolOutput is model-influenced data landing in an href — only ever
+  // accept an https URL, never javascript: or anything else.
+  if (limit && typeof limit.upgradeUrl === 'string' && /^https:\\/\\//.test(limit.upgradeUrl)) {
     document.getElementById('root').hidden = false;
     document.getElementById('headline').textContent =
       'The current plan\\u2019s ' + (limit.feature || 'allowance') + ' is used up';
