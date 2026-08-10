@@ -411,29 +411,43 @@ describe('request-size ceiling', () => {
     }
   })
 
-  it('refuses a bodied request that declares no length at all', async () => {
-    await withServer({}, async (base) => {
-      // A chunked body is the way around a declared-length cap; the SDK's
-      // transport would buffer it without limit, so it never gets there.
-      const response = await fetch(`${base}/mcp`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: 'Bearer rgo-whatever',
-        },
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode('{}'))
-            controller.close()
+  it('serves a chunked request rather than refusing it for having no length', async () => {
+    // Regression: this used to answer 411. `Transfer-Encoding: chunked` is
+    // ordinary HTTP — rejecting it locked out real MCP clients, which is a
+    // worse outcome than the buffering it was guarding against. The cap is
+    // enforced by counting instead.
+    const upstream = stubUpstream()
+    try {
+      await withServer({}, async (base) => {
+        const body = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'get_me', arguments: {} },
+        })
+        const response = await fetch(`${base}/mcp`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer rgo-token',
           },
-        }),
-        // duplex is required for streamed request bodies; cast rather than a
-        // suppression directive, because only some TS lib versions type the
-        // field and a directive is itself an error on the ones that do.
-        ...({ duplex: 'half' } as object),
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(body))
+              controller.close()
+            },
+          }),
+          // duplex is required for streamed request bodies; cast rather than a
+          // suppression directive, because only some TS lib versions type the
+          // field and a directive is itself an error on the ones that do.
+          ...({ duplex: 'half' } as object),
+        })
+        expect(response.status).toBe(200)
       })
-      expect(response.status).toBe(411)
-    })
+    } finally {
+      upstream.restore()
+    }
   })
 
   it('leaves an ordinary tool call unaffected', async () => {

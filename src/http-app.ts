@@ -257,26 +257,34 @@ export function createRequestListener(config: McpAppConfig): RequestListener {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    // Reject oversized bodies before anything buffers them. The declared
-    // length is trustworthy as a ceiling — Node's HTTP parser enforces
-    // content-length framing, so a request cannot deliver more body than it
-    // declared. What it could do is declare nothing (chunked), which is why a
-    // bodied request without a length is refused outright: every real MCP
-    // client POSTs a complete JSON document with content-length set.
-    if (req.method === 'POST') {
-      const declaredLength = Number(req.headers['content-length'])
-      if (!Number.isFinite(declaredLength)) {
-        return json(res, 411, {
-          error: 'length_required',
-          detail: 'POST requests must declare a Content-Length.',
-        })
+    // Reject oversized bodies before anything buffers them.
+    //
+    // A declared length is the cheap case: refuse it without reading a byte.
+    // A chunked request declares nothing, and refusing those outright was
+    // wrong — `Transfer-Encoding: chunked` is ordinary HTTP that plenty of
+    // clients send, and a 411 there rejects legitimate traffic to close a
+    // hole that can be closed without it. So the undeclared case is capped by
+    // counting instead.
+    //
+    // The counter watches the SOCKET rather than the request stream: adding a
+    // `data` listener to `req` would put it in flowing mode and race the SDK
+    // transport for the body. `socket.bytesRead` is observational — the HTTP
+    // parser stays the only consumer — and it counts headers too, which only
+    // makes the ceiling slightly stricter than the body alone.
+    const declaredLength = Number(req.headers['content-length'])
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      return json(res, 413, {
+        error: 'payload_too_large',
+        detail: `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
+      })
+    }
+    if (!Number.isFinite(declaredLength) && req.method === 'POST') {
+      const socket = req.socket
+      const stopOversized = () => {
+        if (socket.bytesRead > MAX_BODY_BYTES) socket.destroy()
       }
-      if (declaredLength > MAX_BODY_BYTES) {
-        return json(res, 413, {
-          error: 'payload_too_large',
-          detail: `Request bodies are limited to ${MAX_BODY_BYTES} bytes.`,
-        })
-      }
+      socket.on('data', stopOversized)
+      res.on('close', () => socket.off('data', stopOversized))
     }
 
     const auth = req.headers.authorization
