@@ -484,3 +484,35 @@ describe('rate limiting', () => {
     }
   })
 })
+
+describe('ChatGPT app-directory domain verification', () => {
+  it('serves the challenge token verbatim as plain text', async () => {
+    // OpenAI compares the body byte for byte: no JSON wrapper, no trailing
+    // newline, or verification silently fails with no useful error.
+    await withServer(
+      { openaiAppsChallengeToken: 'tok_example_value' },
+      async (base) => {
+        const response = await fetch(
+          `${base}/.well-known/openai-apps-challenge`,
+        )
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toContain('text/plain')
+        expect(await response.text()).toBe('tok_example_value')
+      },
+    )
+  })
+
+  it('404s when no token is configured, rather than serving an empty body', async () => {
+    await withServer({}, async (base) => {
+      const response = await fetch(`${base}/.well-known/openai-apps-challenge`)
+      expect(response.status).toBe(404)
+    })
+  })
+
+  it('needs no credential — OpenAI fetches it unauthenticated', async () => {
+    await withServer({ openaiAppsChallengeToken: 'tok' }, async (base) => {
+      const response = await fetch(`${base}/.well-known/openai-apps-challenge`)
+      expect(response.status).toBe(200)
+    })
+  })
+})

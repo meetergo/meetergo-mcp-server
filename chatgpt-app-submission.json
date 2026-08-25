@@ -1,0 +1,764 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "meetergo",
+    "subtitle": "Book and manage meetings",
+    "description": "meetergo connects ChatGPT to your meetergo scheduling account. Check real availability across your connected calendars, book meetings, reschedule or cancel them, and manage contacts and routing forms without leaving the chat.\n\nIt can also set an account up from scratch. Give it your website and it reads your pages, proposes a website assistant with qualification questions, waits for your approval before writing anything, then proves the setup works by running scripted visitor conversations and showing you the transcripts.\n\nAvailable on every meetergo plan, including Free. Data is hosted in Germany.",
+    "category": "PRODUCTIVITY"
+  },
+  "tools": {
+    "get_me": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the authenticated account and its plan limits. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "list_meeting_types": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists the account's meeting types. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_availability": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Computes free slots from saved availability and connected calendars. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "book_appointment": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates a booking in the account's calendar.",
+        "open_world_justification": "Emails a calendar invitation to the attendees.",
+        "destructive_justification": "Creates a real booking and sends invitations that cannot be recalled."
+      }
+    },
+    "reschedule_appointment": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Moves an existing booking to a new time.",
+        "open_world_justification": "Emails the new time to the attendees.",
+        "destructive_justification": "Releases the original slot and notifies attendees; the old time is gone."
+      }
+    },
+    "cancel_appointment": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Cancels an existing booking.",
+        "open_world_justification": "Emails a cancellation notice to the attendees.",
+        "destructive_justification": "Cancels the booking and notifies attendees; the slot is released."
+      }
+    },
+    "list_appointments": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists bookings in the account. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_todays_appointments": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists today's bookings. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_appointment": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns one booking's details. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "add_guest": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Adds a guest to an existing booking.",
+        "open_world_justification": "Emails a calendar invitation to the added guest.",
+        "destructive_justification": "Sends a calendar invitation to the added guest that cannot be recalled."
+      }
+    },
+    "update_appointment_notes": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Replaces the host-side note on a booking.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Replaces the existing note rather than appending to it."
+      }
+    },
+    "create_one_time_booking_link": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a single-use booking link in the account.",
+        "open_world_justification": "Creates a publicly reachable single-use booking URL.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "search_contacts": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches the account's CRM contacts. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_contact": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns one CRM contact. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_contact": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a CRM contact in the account.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_contact": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Updates a CRM contact, replacing its tag list.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Replaces the contact's tag list rather than merging it."
+      }
+    },
+    "list_calendar_connections": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists the calendar accounts connected to this user. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "send_quick_email": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends an email to the given recipient.",
+        "open_world_justification": "Delivers an email to an external recipient.",
+        "destructive_justification": "Sends an external email that cannot be recalled."
+      }
+    },
+    "update_meeting_transcription": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes the transcription setting on a booking.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Can overwrite or clear the existing transcript and summary."
+      }
+    },
+    "get_meeting_type": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns one meeting type's configuration. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_meeting_type": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a meeting type in the account.",
+        "open_world_justification": "Creates a publicly bookable page as soon as the meeting type exists.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_meeting_type": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Updates a meeting type's configuration.",
+        "open_world_justification": "Changes the configuration and URL of a publicly bookable page.",
+        "destructive_justification": "Overwrites public booking settings and can invalidate the previous URL slug."
+      }
+    },
+    "delete_meeting_type": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a meeting type.",
+        "open_world_justification": "Takes a publicly bookable page offline immediately.",
+        "destructive_justification": "Permanently removes the meeting type and its booking link."
+      }
+    },
+    "get_personal_page": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the user's public booking page settings. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_personal_page": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Updates the user's booking page settings.",
+        "open_world_justification": "Changes branding and content on the user's public booking page.",
+        "destructive_justification": "Overwrites the previous public page values and can remove its header image."
+      }
+    },
+    "import_booking_page": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a public booking page and creates new meeting types in the meetergo account.",
+        "open_world_justification": "Fetches a third-party page and creates publicly bookable meetergo pages.",
+        "destructive_justification": "Only adds meeting types and does not edit or remove existing records."
+      }
+    },
+    "list_routing_forms": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists the account's routing forms. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_routing_form": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns one routing form and its rules. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_routing_form": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a routing form in the account.",
+        "open_world_justification": "Creates a routing form with a public visitor URL.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_routing_form": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Updates a routing form and syncs its qualifier rules.",
+        "open_world_justification": "Changes a public routing form and the destinations visitors receive.",
+        "destructive_justification": "Removes any qualifier rule omitted from the request."
+      }
+    },
+    "delete_routing_form": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a routing form.",
+        "open_world_justification": "Takes the public routing form and any shared URL offline.",
+        "destructive_justification": "Permanently removes the form and its rules."
+      }
+    },
+    "send_routing_form": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends a routing form to the given recipients.",
+        "open_world_justification": "Delivers the form to external recipients.",
+        "destructive_justification": "Can send an external email or SMS that cannot be recalled."
+      }
+    },
+    "list_form_recipients": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists who a form was sent to. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "list_data_fields": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists reusable form fields in the account. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_data_field": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a reusable form field.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "bulk_create_contacts": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Imports multiple CRM contacts into the account.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "delete_contact": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a CRM contact.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Permanently removes the contact record."
+      }
+    },
+    "list_webhooks": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists the account's webhook subscriptions. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_webhook": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Registers an endpoint the platform will POST booking data to.",
+        "open_world_justification": "Causes the platform to POST booking data to a third-party endpoint.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_webhook": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes which endpoint receives posted booking data.",
+        "open_world_justification": "Redirects posted booking data to a different third-party endpoint.",
+        "destructive_justification": "Replaces the webhook endpoint or event list rather than merging them."
+      }
+    },
+    "delete_webhook": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a webhook subscription.",
+        "open_world_justification": "Stops deliveries to the configured external endpoint immediately.",
+        "destructive_justification": "Permanently removes the subscription and stops delivery."
+      }
+    },
+    "get_mira_settings": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the website assistant's configuration. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_mira_settings": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Updates the website assistant, including whether it is live on the public site.",
+        "open_world_justification": "Can publish or unpublish the assistant on the company's public website.",
+        "destructive_justification": "Overwrites the live assistant configuration the website answers from."
+      }
+    },
+    "restore_mira_settings": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Restores a previous assistant configuration snapshot.",
+        "open_world_justification": "Can restore a configuration that puts the assistant back on the public website.",
+        "destructive_justification": "Overwrites the current assistant configuration with a snapshot."
+      }
+    },
+    "get_mira_widget_embed": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the embed snippet for the website assistant. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "crawl_company_website": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads pages from the given website into the account's private knowledge base.",
+        "open_world_justification": "Can immediately change answers shown by a live public website assistant.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_crawl_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the progress of a knowledge crawl. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "list_knowledge_documents": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists documents in the account's knowledge base. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "delete_knowledge_document": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a document from the knowledge base.",
+        "open_world_justification": "Can immediately remove information used by a live public website assistant.",
+        "destructive_justification": "Permanently removes the document and its indexed content."
+      }
+    },
+    "propose_conversion_setup": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a website and returns a proposed assistant configuration without saving it. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "answer_visitor_question": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Stores a question-and-answer pair in the account's knowledge base.",
+        "open_world_justification": "Can immediately change answers shown by a live public website assistant.",
+        "destructive_justification": "Answering the same question replaces the previously stored answer."
+      }
+    },
+    "get_conversation_insights": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns recent website chat activity and unanswered questions. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "search_company_knowledge": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches the account's knowledge base. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "get_setup_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the account's launch checklist state. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "create_qualification_form": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a routing form from qualification questions.",
+        "open_world_justification": "Creates a real routing form with a public visitor flow.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "run_test_drive": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Runs scripted conversations against the saved assistant and stores the verdict.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "verify_widget_install": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Fetches a public page and checks whether the assistant snippet is present. It does not create, update or delete anything.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Confirm which meetergo account is connected.",
+      "user_prompt": "Which meetergo account am I connected to, and which plan is it on?",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_me",
+      "expected_output": "Returns the authenticated account identity and its plan information without changing account state.",
+      "expected_output_url": null
+    },
+    {
+      "description": "List the meeting types available to the connected account.",
+      "user_prompt": "List my meetergo meeting types with their names and durations.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_meeting_types",
+      "expected_output": "Returns the account's meeting types as a list with names, durations and identifiers. The review fixture contains an active 30-minute meeting type named OpenAI Review.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Resolve a meeting type before checking its real availability.",
+      "user_prompt": "For my OpenAI Review meeting type, show available times next week in Europe/Berlin.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_meeting_types, get_availability",
+      "expected_output": "First resolves the OpenAI Review meetingTypeId, then returns concrete bookable slots from the connected calendars in the flat, sorted slotsStartUtc list. The review fixture provides recurring weekday availability for this meeting type.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Create a repeatable one-time booking link without consuming a calendar slot.",
+      "user_prompt": "Create a one-time booking link for my OpenAI Review meeting type.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_meeting_types, create_one_time_booking_link",
+      "expected_output": "Resolves the fixture meeting type, asks for confirmation for the write, then returns a new public single-use booking URL. Repeating the test creates an independent link and does not alter availability.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Show how far the account is from being live.",
+      "user_prompt": "Show my meetergo setup status.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_setup_status",
+      "expected_output": "Renders the six-step launch checklist with a stable done or not-done value and the next action for every step.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for a general knowledge question about scheduling.",
+      "user_prompt": "What is the best time of day to hold a sales call?",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked; this is general advice, not an action on the account.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for a different calendar provider.",
+      "user_prompt": "Delete the 3pm event from my Outlook calendar.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked; it manages meetergo bookings, not another provider's calendar.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not fetch a private or internal address when asked to check an install.",
+      "user_prompt": "Check whether the meetergo widget is installed on http://192.168.1.10/admin.",
+      "file_attachment_urls": null,
+      "tools_triggered": "verify_widget_install",
+      "expected_output": "The tool rejects the private address before making a network request and reports that only public hosts can be checked.",
+      "expected_output_url": null
+    }
+  ]
+}

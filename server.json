@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.meetergo/mcp-server",
+  "title": "meetergo",
+  "description": "Book and reschedule meetings, manage contacts, and set up meetergo's website assistant.",
+  "version": "0.6.25",
+  "repository": {
+    "url": "https://github.com/meetergo/meetergo-mcp-server",
+    "source": "github"
+  },
+  "websiteUrl": "https://developer.meetergo.com/mcp-server",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.meetergo.com/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@meetergo/mcp-server",
+      "version": "0.6.25",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MEETERGO_TOKEN",
+          "description": "Personal Access Token from https://my.meetergo.com/integrations. Starts with rgo- and works on every plan, including Free.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

@@ -48,6 +48,10 @@ export function buildServer(
           // so getting them right matters more than it looks.
           idempotentHint: tool.readOnly,
           destructiveHint: tool.destructive ?? false,
+          // Stated explicitly on every tool, including the false ones. The MCP
+          // spec gives clients a default, but the ChatGPT app review treats an
+          // absent hint as unanswered rather than "no" and rejects on it.
+          openWorldHint: tool.openWorld ?? false,
         },
         ...(options.ui && tool.name === 'get_setup_status'
           ? { _meta: { 'openai/outputTemplate': SETUP_STATUS_TEMPLATE_URI } }

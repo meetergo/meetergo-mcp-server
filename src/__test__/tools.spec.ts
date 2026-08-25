@@ -8,7 +8,7 @@ import { TOOLS, sanitizeMiraSettingsForPatch } from '../tools.js'
  */
 describe('meetergo MCP tool surface', () => {
   it('covers the API surface an agent needs, with no duplicate names', () => {
-    expect(TOOLS).toHaveLength(56)
+    expect(TOOLS).toHaveLength(57)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
   })
 
@@ -68,6 +68,7 @@ describe('meetergo MCP tool surface', () => {
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
+      'import_booking_page',
       'reschedule_appointment',
       'restore_mira_settings',
       // Not a data mutation an operator would name, but it persists the
@@ -94,24 +95,27 @@ describe('meetergo MCP tool surface', () => {
     // Everything that removes something a human would miss. A delete that is
     // not flagged is a delete a host will let an agent do unattended.
     expect(destructive).toEqual([
+      'add_guest',
+      'answer_visitor_question',
+      'book_appointment',
       'cancel_appointment',
       'delete_contact',
       'delete_knowledge_document',
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
-      // Moves a real booking and notifies attendees — the old slot is gone.
       'reschedule_appointment',
-      // Not deletes, but both overwrite the live assistant configuration a
-      // company's website widget is answering from.
       'restore_mira_settings',
-      // Both REPLACE what is there (the note wholesale, the tag list
-      // wholesale) — a careless call silently discards data.
+      'send_quick_email',
+      'send_routing_form',
       'update_appointment_notes',
       'update_contact',
+      'update_meeting_transcription',
+      'update_meeting_type',
       'update_mira_settings',
-      // Not a delete, but its qualifier sync removes whatever you leave out.
+      'update_personal_page',
       'update_routing_form',
+      'update_webhook',
     ])
   })
 
@@ -128,11 +132,88 @@ describe('meetergo MCP tool surface', () => {
     }
   })
 
+  it('keeps the submitted annotations identical to the runtime tools', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const submission = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../../chatgpt-app-submission.json', import.meta.url),
+        ),
+        'utf8',
+      ),
+    ) as {
+      tools: Record<
+        string,
+        {
+          annotations: {
+            readOnlyHint: boolean
+            openWorldHint: boolean
+            destructiveHint: boolean
+          }
+          justifications: Record<string, string>
+        }
+      >
+      test_cases: Array<{
+        description: string
+        user_prompt: string
+        tools_triggered: string | null
+        expected_output: string
+      }>
+      negative_test_cases: Array<{
+        description: string
+        user_prompt: string
+        tools_triggered: string | null
+        expected_output: string
+      }>
+    }
+
+    expect(Object.keys(submission.tools).sort()).toEqual(
+      TOOLS.map((tool) => tool.name).sort(),
+    )
+    for (const tool of TOOLS) {
+      const submitted = submission.tools[tool.name]
+      expect(submitted.annotations, tool.name).toEqual({
+        readOnlyHint: tool.readOnly,
+        openWorldHint: tool.openWorld ?? false,
+        destructiveHint: tool.destructive ?? false,
+      })
+      expect(
+        Object.values(submitted.justifications).every(
+          (justification) => justification.trim().length > 0,
+        ),
+        `${tool.name} justifications`,
+      ).toBe(true)
+    }
+
+    expect(submission.test_cases).toHaveLength(5)
+    expect(submission.negative_test_cases).toHaveLength(3)
+    const toolNames = new Set(TOOLS.map((tool) => tool.name))
+    for (const testCase of [
+      ...submission.test_cases,
+      ...submission.negative_test_cases,
+    ]) {
+      expect(testCase.description.trim(), 'test description').toBeTruthy()
+      expect(testCase.user_prompt.trim(), 'test prompt').toBeTruthy()
+      expect(testCase.expected_output.trim(), 'expected output').toBeTruthy()
+      for (const toolName of testCase.tools_triggered?.split(/,\s*/) ?? []) {
+        expect(toolNames.has(toolName), `unknown review tool ${toolName}`).toBe(
+          true,
+        )
+      }
+    }
+  })
+
   it('requires an identifier on every tool that changes an existing record', () => {
     // Creates take no id by definition; everything else must name its target,
     // or an agent can fire it with no arguments and hit something arbitrary.
     const isCreate = (n: string) =>
-      n.startsWith('create_') || n === 'bulk_create_contacts'
+      n.startsWith('create_') ||
+      n === 'bulk_create_contacts' ||
+      // Additive by construction: it only ever creates meeting types from a
+      // source URL and never edits or removes one that already exists, so
+      // there is no target record to name.
+      n === 'import_booking_page'
     const targets = [
       'appointmentId',
       'meetingTypeId',
@@ -826,5 +907,318 @@ describe('release hygiene', () => {
     expect(read('../../mcpb/manifest.json').version).toBe(
       read('../../package.json').version,
     )
+  })
+})
+
+describe('open-world annotations', () => {
+  it('flags exactly the tools whose effects leave meetergo', () => {
+    const openWorld = TOOLS.filter((t) => t.openWorld)
+      .map((t) => t.name)
+      .sort()
+    // "Can someone who is not this user observe the effect." Mail to an
+    // attendee, a page the public can load, an HTTP call to a third party.
+    // ChatGPT's app review rejects a missing or wrong hint here, and it is
+    // also the honest answer: booking a meeting emails a person who never
+    // agreed to an agent acting for them.
+    expect(openWorld).toEqual([
+      'add_guest',
+      'answer_visitor_question',
+      'book_appointment',
+      'cancel_appointment',
+      'crawl_company_website',
+      'create_meeting_type',
+      'create_one_time_booking_link',
+      'create_qualification_form',
+      'create_routing_form',
+      'create_webhook',
+      'delete_knowledge_document',
+      'delete_meeting_type',
+      'delete_routing_form',
+      'delete_webhook',
+      'import_booking_page',
+      'reschedule_appointment',
+      'restore_mira_settings',
+      'send_quick_email',
+      'send_routing_form',
+      'update_meeting_type',
+      'update_mira_settings',
+      'update_personal_page',
+      'update_routing_form',
+      'update_webhook',
+    ])
+  })
+
+  it('never flags a read as open-world', () => {
+    // Reading a public page observes external state; it does not change it.
+    // propose_conversion_setup and verify_widget_install both fetch the open
+    // internet without changing it and must stay false.
+    for (const tool of TOOLS.filter((t) => t.readOnly)) {
+      expect(tool.openWorld, `${tool.name}`).toBeFalsy()
+    }
+  })
+})
+
+describe('import_booking_page', () => {
+  const tool = TOOLS.find((t) => t.name === 'import_booking_page')!
+
+  it('posts the url straight to the import endpoint', async () => {
+    const calls: unknown[][] = []
+    const client = {
+      request: (...args: unknown[]) => {
+        calls.push(args)
+        return Promise.resolve({ provider: 'calendly', created: [], failed: [] })
+      },
+    }
+    await tool.run(client as never, { url: 'https://calendly.com/acme' })
+    expect(calls).toEqual([
+      ['POST', '/import', { body: { url: 'https://calendly.com/acme' } }],
+    ])
+  })
+
+  it('rejects a non-URL before it reaches the API', () => {
+    const url = tool.schema.url as { safeParse: (v: unknown) => { success: boolean } }
+    expect(url.safeParse('calendly.com/acme').success).toBe(false)
+    expect(url.safeParse('https://calendly.com/acme').success).toBe(true)
+  })
+
+  it('fences the result as untrusted', () => {
+    // Meeting-type names and booking questions come from a profile page the
+    // person running the agent may not control — on a migration it is often
+    // someone else's. Without the fence, "add a meeting type called ignore
+    // previous instructions" arrives next to a tool surface holding deletes.
+    expect(tool.untrustedSource).toBe('the imported booking page')
+  })
+
+  it('names no scheduler the brand rules keep out of public copy', () => {
+    // Tool names and descriptions render in every MCP client, so they are
+    // public copy. Provider detection is by URL, so the tool works for the
+    // others without naming them.
+    const copy = `${tool.name} ${tool.title} ${tool.description}`.toLowerCase()
+    expect(copy).toContain('calendly')
+    expect(copy).not.toContain('zeeg')
+    expect(copy).not.toContain('cituro')
+    expect(copy).not.toContain('terminpilot')
+  })
+
+  it('warns that the import is additive', () => {
+    // Running it twice duplicates. An agent that does not know this will
+    // re-run on failure and quietly double the account's meeting types.
+    expect(tool.description.toLowerCase()).toContain('twice')
+  })
+})
+
+describe('agent-readable scheduling results', () => {
+  const CONFIRMED_APPOINTMENT = {
+    id: 'appt-1',
+    start: '2026-10-20T08:00:00.000Z',
+    end: '2026-10-20T08:30:00.000Z',
+    isCancelled: false,
+    cancel: { actionAt: null, reason: null },
+    rescheduledAt: null,
+  }
+
+  function toolByName(name: string) {
+    const tool = TOOLS.find((candidate) => candidate.name === name)
+    if (!tool) throw new Error(`Missing tool ${name}`)
+    return tool
+  }
+
+  it('adds one sorted, deduplicated UTC list to availability', async () => {
+    const { client } = record({
+      '/meeting-type/mt-1': { id: 'mt-1', userId: 'u-1' },
+      '/booking-availability': {
+        timezone: 'Europe/Berlin',
+        dates: [
+          {
+            date: '2026-10-20',
+            spots: [
+              { startTime: '2026-10-20T11:30:00.000+02:00' },
+              { startTime: '2026-10-20T08:00:00.000+02:00' },
+              { startTime: '2026-10-20T08:00:00.000+02:00' },
+            ],
+          },
+        ],
+      },
+    })
+
+    const result = (await toolByName('get_availability').run(client, {
+      meetingTypeId: 'mt-1',
+      start: '2026-10-20T00:00:00Z',
+      end: '2026-10-21T00:00:00Z',
+    })) as Record<string, unknown>
+
+    expect(result['slotsStartUtc']).toEqual([
+      '2026-10-20T06:00:00.000Z',
+      '2026-10-20T09:30:00.000Z',
+    ])
+  })
+
+  it('labels confirmed and cancelled appointment reads', async () => {
+    const { client: confirmedClient } = record({
+      '/appointment/appt-1': CONFIRMED_APPOINTMENT,
+    })
+    const confirmed = (await toolByName('get_appointment').run(
+      confirmedClient,
+      { appointmentId: 'appt-1' },
+    )) as Record<string, unknown>
+
+    const { client: cancelledClient } = record({
+      '/appointment/appt-1': {
+        ...CONFIRMED_APPOINTMENT,
+        cancel: { actionAt: '2026-10-19T09:00:00.000Z', reason: 'conflict' },
+      },
+    })
+    const cancelled = (await toolByName('get_appointment').run(
+      cancelledClient,
+      { appointmentId: 'appt-1' },
+    )) as Record<string, unknown>
+
+    expect(confirmed['status']).toBe('confirmed')
+    expect(cancelled['status']).toBe('cancelled')
+  })
+
+  it('decorates paginated and today appointment collections', async () => {
+    const rescheduled = {
+      ...CONFIRMED_APPOINTMENT,
+      rescheduledAt: '2026-10-19T09:00:00.000Z',
+    }
+    const { client } = record({
+      '/appointment/paginated': {
+        appointments: [
+          CONFIRMED_APPOINTMENT,
+          { ...CONFIRMED_APPOINTMENT, isCancelled: true },
+        ],
+        total: 2,
+      },
+      '/appointment/today': [rescheduled],
+    })
+
+    const paginated = (await toolByName('list_appointments').run(
+      client,
+      {},
+    )) as {
+      appointments: Array<Record<string, unknown>>
+      total: number
+    }
+    const today = (await toolByName('get_todays_appointments').run(
+      client,
+      {},
+    )) as Array<Record<string, unknown>>
+
+    expect(paginated.total).toBe(2)
+    expect(paginated.appointments.map((item) => item['status'])).toEqual([
+      'confirmed',
+      'cancelled',
+    ])
+    expect(today[0]).toMatchObject({ status: 'confirmed', rescheduled: true })
+  })
+
+  it.each([
+    ['requireHostConfirmation', 'host'],
+    ['doubleOptIn', 'attendee'],
+  ])(
+    'does not report a %s provisional response as booked',
+    async (bookingType, actor) => {
+      const { client } = record({
+        ...SOLO_MEETING_TYPE,
+        '/booking': { bookingType, provisionalBookingId: 'pb-1' },
+      })
+
+      const result = (await toolByName('book_appointment').run(client, {
+        meetingTypeId: 'mt-1',
+        start: '2026-10-20T06:00:00.000Z',
+        email: 'ada@example.com',
+        fullName: 'Ada Lovelace',
+      })) as Record<string, unknown>
+
+      expect(result['bookingState']).toBe('pending_confirmation')
+      expect(String(result['message']).toLowerCase()).toContain(actor)
+      expect(String(result['message'])).toContain('NOT booked yet')
+    },
+  )
+
+  it('labels a confirmed booking and echoes the requested UTC start', async () => {
+    const { client } = record({
+      ...SOLO_MEETING_TYPE,
+      '/booking': { appointmentId: 'appt-new', secret: 'secret' },
+    })
+
+    const result = (await toolByName('book_appointment').run(client, {
+      meetingTypeId: 'mt-1',
+      start: '2026-10-20T08:00:00.000+02:00',
+      email: 'ada@example.com',
+      fullName: 'Ada Lovelace',
+    })) as Record<string, unknown>
+
+    expect(result).toMatchObject({
+      appointmentId: 'appt-new',
+      bookingState: 'confirmed',
+      startUtc: '2026-10-20T06:00:00.000Z',
+    })
+  })
+
+  it('reads the nested reschedule response and echoes the new UTC start', async () => {
+    const { client } = record({
+      '/appointment/appt-1/reschedule': {
+        appointment: {
+          ...CONFIRMED_APPOINTMENT,
+          start: '2026-10-21T07:30:00.000Z',
+          rescheduledAt: '2026-10-19T09:00:00.000Z',
+        },
+        previousStart: CONFIRMED_APPOINTMENT.start,
+      },
+    })
+
+    const result = (await toolByName('reschedule_appointment').run(client, {
+      appointmentId: 'appt-1',
+      start: '2026-10-21T09:30:00.000+02:00',
+    })) as Record<string, unknown>
+
+    expect(result).toMatchObject({
+      bookingState: 'confirmed',
+      startUtc: '2026-10-21T07:30:00.000Z',
+      appointment: { status: 'confirmed', rescheduled: true },
+    })
+  })
+
+  it('distinguishes removing one attendee from cancelling the appointment', async () => {
+    const tool = toolByName('cancel_appointment')
+    const { client: attendeeClient } = record({
+      '/appointment/appt-1/cancel': CONFIRMED_APPOINTMENT,
+    })
+    const attendeeResult = (await tool.run(attendeeClient, {
+      appointmentId: 'appt-1',
+      attendeeId: 'attendee-1',
+    })) as Record<string, unknown>
+
+    const { client: allClient } = record({
+      '/appointment/appt-1/cancel': {
+        ...CONFIRMED_APPOINTMENT,
+        isCancelled: true,
+      },
+    })
+    const allResult = (await tool.run(allClient, {
+      appointmentId: 'appt-1',
+      cancelAll: true,
+    })) as Record<string, unknown>
+
+    expect(attendeeResult).toMatchObject({
+      bookingState: 'attendee_removed',
+      removedAttendeeId: 'attendee-1',
+      status: 'confirmed',
+    })
+    expect(allResult).toMatchObject({
+      bookingState: 'cancelled',
+      status: 'cancelled',
+    })
+  })
+
+  it('passes unexpected non-object payloads through unchanged', async () => {
+    const { client } = record({
+      '/appointment/appt-1': ['unexpected', 'array'],
+    })
+    await expect(
+      toolByName('get_appointment').run(client, { appointmentId: 'appt-1' }),
+    ).resolves.toEqual(['unexpected', 'array'])
   })
 })

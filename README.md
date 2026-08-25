@@ -10,7 +10,7 @@ change anything. Both are useful and they do different jobs:
 | | Docs MCP | This server |
 |---|---|---|
 | Endpoint | `developer.meetergo.com/mcp` | `mcp.meetergo.com/mcp`, or `npx` over stdio |
-| Tools | `SearchMeetergo` | 56 scheduling, CRM, Mira and config tools |
+| Tools | `SearchMeetergo` | 57 scheduling, CRM, Mira and config tools |
 | Can it book? | No | **Yes** |
 | Use it to | write an integration | be the integration |
 
@@ -194,7 +194,7 @@ server itself is never gated — a token from any plan, including Free, works.
 
 ## Tools
 
-56 tools, covering scheduling end to end. **Scheduling** is the loop most agents
+57 tools, covering scheduling end to end. **Scheduling** is the loop most agents
 live in; the rest is there so an agent never has to fall back to raw REST.
 
 ### Scheduling

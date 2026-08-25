@@ -58,6 +58,16 @@ export interface McpAppConfig {
    * fact, so discovery and token handling can never disagree about it.
    */
   oauth?: OAuthSupport
+  /**
+   * Domain-verification token for the ChatGPT app directory, served verbatim at
+   * /.well-known/openai-apps-challenge. OpenAI fetches it to prove we control
+   * the host it is about to list.
+   *
+   * Not a credential: possessing the string grants nothing, because the proof
+   * IS being able to serve it from this origin. It is configured rather than
+   * hardcoded so a re-issued token is a values change, not a release.
+   */
+  openaiAppsChallengeToken?: string
 }
 
 /**
@@ -85,6 +95,9 @@ const RATE_MAX_KEYS = 10_000
  * orders of magnitude above any real MCP request.
  */
 const MAX_BODY_BYTES = 1_000_000
+
+/** Where OpenAI looks to confirm we control this host before listing it. */
+const OPENAI_APPS_CHALLENGE_PATH = '/.well-known/openai-apps-challenge'
 
 function createRateLimiter(): (key: string) => boolean {
   const buckets = new Map<string, { count: number; resetAt: number }>()
@@ -352,6 +365,15 @@ export function createRequestListener(config: McpAppConfig): RequestListener {
         version: config.version,
         ...(config.deploy && { deploy: config.deploy }),
       })
+    // Plain text, no trailing newline: OpenAI compares the body byte for byte.
+    if (path === OPENAI_APPS_CHALLENGE_PATH) {
+      if (!config.openaiAppsChallengeToken) return json(res, 404, {
+        error: 'not_configured',
+        detail: 'No ChatGPT app-directory challenge token is configured.',
+      })
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+      return res.end(config.openaiAppsChallengeToken)
+    }
     if (PROTECTED_RESOURCE_METADATA_PATHS.includes(path)) {
       if (!config.oauth)
         return json(res, 404, {

@@ -86,6 +86,8 @@ const httpServer = createServer(
     resource: RESOURCE_URL,
     metadataUrl: RESOURCE_METADATA_URL,
     oauth,
+    openaiAppsChallengeToken:
+      process.env.OPENAI_APPS_CHALLENGE_TOKEN?.trim() || undefined,
   }),
 )
 

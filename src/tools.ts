@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { MeetergoClient } from './client.js'
 import { fetchPublicUrl } from './safe-fetch.js'
+import { presentSchedulingResult } from './scheduling-result.js'
 import {
   analyzeInstallHtml,
   deriveSetupStatus,
@@ -38,6 +39,19 @@ export interface ToolDefinition {
   readOnly: boolean
   /** Set on tools that remove or irreversibly alter something. */
   destructive?: boolean
+  /**
+   * Set on tools that reach OUTSIDE meetergo — mail to an attendee, a page the
+   * public can load, an HTTP call to a third-party endpoint. Not "does it touch
+   * the network" (everything here does), but "can a person who is not this user
+   * observe the effect".
+   *
+   * The distinction is the one a reviewer checks: booking a meeting emails an
+   * invitation to someone who never consented to an agent acting for them, and
+   * switching the widget live puts an assistant on a public website. Those are
+   * categorically different from editing a private record, and hosts surface
+   * them differently.
+   */
+  openWorld?: boolean
   /**
    * Names the origin of third-party text inside this tool's results (website
    * visitors, crawled pages, model output derived from them). The server wraps
@@ -337,7 +351,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_availability',
     title: 'Get available slots',
     description:
-      'Get bookable time slots for a meeting type in a date range. Returns the slots a booking will actually be accepted for — do not infer availability from the calendar.',
+      "Get bookable time slots for a meeting type in a date range. Returns the slots a booking will actually accept. Do not infer availability from the calendar. Use only starts from the response's slotsStartUtc list.",
     schema: {
       meetingTypeId: z.string().describe('From list_meeting_types'),
       start: iso.describe('Start of the search window'),
@@ -378,16 +392,21 @@ export const TOOLS: ToolDefinition[] = [
         hostIds?.length || queueId
           ? { hostIds, queueId }
           : await resolveHostScope(client, args.meetingTypeId)
-      return client.request('GET', '/booking-availability', {
-        query: { ...rest, ...scope },
-      })
+      const availability = await client.request(
+        'GET',
+        '/booking-availability',
+        {
+          query: { ...rest, ...scope },
+        },
+      )
+      return presentSchedulingResult('availability', availability)
     },
   },
   {
     name: 'book_appointment',
     title: 'Book an appointment',
     description:
-      'Book a slot. Use a start time returned by get_availability — booking an unlisted slot is rejected. Creates a real appointment and sends real invitations. Provide either fullName, or firstName and lastName.',
+      'Book a slot. Use a start time returned by get_availability. An unlisted slot is rejected. Creates a real appointment and sends real invitations. A confirmed bookingState means the appointment exists. A pending_confirmation state means it is NOT booked yet. Provide either fullName, or firstName and lastName.',
     schema: {
       meetingTypeId: z.string(),
       start: iso.describe('Slot start, from get_availability'),
@@ -438,6 +457,8 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Rarely needed — resolved from the meeting type by default.'),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: async (
       client,
       {
@@ -471,7 +492,7 @@ export const TOOLS: ToolDefinition[] = [
           ? { hostIds, queueId }
           : await resolveHostScope(client, meetingTypeId)
 
-      return client.request('POST', '/booking', {
+      const booking = await client.request('POST', '/booking', {
         // The API takes a nested attendee and requires `receiveReminders` and
         // `notes` to be present — an agent that omits them gets a validation
         // error it cannot diagnose, so default them here rather than making the
@@ -497,13 +518,16 @@ export const TOOLS: ToolDefinition[] = [
           },
         },
       })
+      return presentSchedulingResult('book', booking, {
+        requestedStart: start,
+      })
     },
   },
   {
     name: 'reschedule_appointment',
     title: 'Reschedule an appointment',
     description:
-      'Move an appointment to a new start time. Duration is unchanged. Validates availability unless ignoreAvailability is set.',
+      'Move an appointment to a new start time. Duration is unchanged. Validates availability unless ignoreAvailability is set. A successful response echoes the new time as startUtc.',
     schema: {
       appointmentId: z.string(),
       start: iso.describe('New start time'),
@@ -513,18 +537,27 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Schedule outside available hours or over an existing booking'),
     },
     readOnly: false,
+    openWorld: true,
     // Moves a real booking and notifies the attendees — the old slot is gone.
     destructive: true,
-    run: (client, { appointmentId, ...body }) =>
-      client.request('POST', `/appointment/${appointmentId}/reschedule`, {
-        body,
-      }),
+    run: async (client, { appointmentId, ...body }) => {
+      const result = await client.request(
+        'POST',
+        `/appointment/${appointmentId}/reschedule`,
+        {
+          body,
+        },
+      )
+      return presentSchedulingResult('reschedule', result, {
+        requestedStart: body.start,
+      })
+    },
   },
   {
     name: 'cancel_appointment',
     title: 'Cancel an appointment',
     description:
-      'Cancel an appointment and notify attendees. For a group booking pass attendeeId to remove one person, or cancelAll to cancel the whole appointment — passing neither is rejected, so a bulk cancel is never accidental.',
+      'Cancel an appointment and notify attendees. For a group booking pass attendeeId to remove one person, or cancelAll to cancel the whole appointment. Passing neither is rejected, so a bulk cancel is never accidental. The response distinguishes attendee_removed from cancelled.',
     schema: {
       appointmentId: z.string(),
       attendeeId: z.string().optional().describe('Remove a single attendee'),
@@ -540,15 +573,24 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Included in the notification emails to participants'),
     },
     readOnly: false,
+    openWorld: true,
     destructive: true,
-    run: (client, { appointmentId, ...body }) =>
-      client.request('POST', `/appointment/${appointmentId}/cancel`, { body }),
+    run: async (client, { appointmentId, ...body }) => {
+      const result = await client.request(
+        'POST',
+        `/appointment/${appointmentId}/cancel`,
+        { body },
+      )
+      return presentSchedulingResult('cancel', result, {
+        attendeeId: body.attendeeId,
+      })
+    },
   },
   {
     name: 'list_appointments',
     title: 'List appointments',
     description:
-      'List appointments with pagination and filters. Use for "what is on my calendar" and for finding an appointmentId to change. Pages are 0-indexed.',
+      'List appointments with pagination and filters. Use for "what is on my calendar" and for finding an appointmentId to change. Each item has a confirmed or cancelled status. Never report a cancelled appointment as upcoming. Pages are 0-indexed.',
     schema: {
       page: z
         .number()
@@ -569,10 +611,12 @@ export const TOOLS: ToolDefinition[] = [
     // `page` and `pageSize` are required by the API with no defaults. Filling
     // them in beats making every caller remember, and beats a 400 the agent
     // reads as "no appointments".
-    run: (client, { page, pageSize, ...rest }) =>
-      client.request('GET', '/appointment/paginated', {
+    run: async (client, { page, pageSize, ...rest }) => {
+      const result = await client.request('GET', '/appointment/paginated', {
         query: { page: page ?? 0, pageSize: pageSize ?? 20, ...rest },
-      }),
+      })
+      return presentSchedulingResult('appointment-list', result)
+    },
   },
   {
     name: 'get_todays_appointments',
@@ -581,17 +625,24 @@ export const TOOLS: ToolDefinition[] = [
       "Today's appointments for the authenticated user. Cheaper and more precise than filtering list_appointments by date.",
     schema: {},
     readOnly: true,
-    run: (client) => client.request('GET', '/appointment/today'),
+    run: async (client) =>
+      presentSchedulingResult(
+        'today-appointments',
+        await client.request('GET', '/appointment/today'),
+      ),
   },
   {
     name: 'get_appointment',
     title: 'Get an appointment',
     description:
-      'Full detail for one appointment: attendees and their attendeeIds, hosts, location, notes. Needed before add_guest or a per-attendee cancel, both of which take an attendeeId this returns.',
+      'Full detail for one appointment: status, attendees and their attendeeIds, hosts, location, notes. Needed before add_guest or a per-attendee cancel, both of which take an attendeeId this returns. Check status before reporting a booking as active.',
     schema: { appointmentId: z.string() },
     readOnly: true,
-    run: (client, { appointmentId }) =>
-      client.request('GET', `/appointment/${appointmentId}`),
+    run: async (client, { appointmentId }) =>
+      presentSchedulingResult(
+        'appointment',
+        await client.request('GET', `/appointment/${appointmentId}`),
+      ),
   },
   {
     name: 'add_guest',
@@ -606,6 +657,8 @@ export const TOOLS: ToolDefinition[] = [
       email: z.string().email(),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, { appointmentId, ...body }) =>
       client.request('PATCH', `/appointment/${appointmentId}/guest`, { body }),
   },
@@ -633,6 +686,7 @@ export const TOOLS: ToolDefinition[] = [
       'Generate a single-use booking link for a meeting type. Use when sending someone a link to pick their own slot, instead of booking on their behalf — no attendee details needed and the link cannot be reshared.',
     schema: { meetingTypeId: z.string() },
     readOnly: false,
+    openWorld: true,
     run: (client, { meetingTypeId }) =>
       client.request('POST', `/one-time-booking-link/create/${meetingTypeId}`),
   },
@@ -745,6 +799,8 @@ export const TOOLS: ToolDefinition[] = [
       content: z.string().describe('Body of the email'),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, body) =>
       client.request('POST', '/attendee/quick-mail', { body }),
   },
@@ -767,6 +823,7 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Summary in markdown, or null to clear'),
     },
     readOnly: false,
+    destructive: true,
     run: (client, { appointmentId, ...body }) =>
       client.request('PATCH', `/appointment/${appointmentId}/transcription`, {
         body,
@@ -800,6 +857,7 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Attendees per slot, for a group booking'),
     },
     readOnly: false,
+    openWorld: true,
     run: (client, { spots, ...info }) =>
       client.request('POST', '/meeting-type', {
         body: { meetingInfo: definedOnly(info), spots },
@@ -824,6 +882,8 @@ export const TOOLS: ToolDefinition[] = [
       spots: z.number().int().min(1).max(100).optional(),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, { meetingTypeId, slug, spots, ...info }) => {
       const meetingInfo = definedOnly(info)
       return client.request('PATCH', `/meeting-type/${meetingTypeId}`, {
@@ -844,6 +904,7 @@ export const TOOLS: ToolDefinition[] = [
       'Delete a meeting type. Its booking page stops working immediately. Existing appointments are not cancelled.',
     schema: { meetingTypeId: z.string() },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: (client, { meetingTypeId }) =>
       client.request('DELETE', `/meeting-type/${meetingTypeId}`),
@@ -886,8 +947,36 @@ export const TOOLS: ToolDefinition[] = [
         ),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, body) =>
       client.request('PATCH', '/personal-page/me', { body }),
+  },
+
+  // ---- Migration ----------------------------------------------------------
+  {
+    name: 'import_booking_page',
+    title: 'Import a booking page from another scheduler',
+    description:
+      'Recreate an existing public booking page in meetergo from its URL — Calendly and several other schedulers are recognised automatically from the link. Reads the public profile, then creates one meeting type per event type with its duration, location and booking questions. Nothing is read from the old account beyond what its public page already shows, and nothing there is changed. Import is additive: it never edits or removes meeting types that already exist here, so running it twice creates duplicates. Returns what was created, what failed and why, so you can report both to the user rather than claiming a clean import.',
+    schema: {
+      url: z
+        .string()
+        .url()
+        .describe(
+          'Public booking page URL, e.g. https://calendly.com/<slug>. The provider is detected from the URL; an unrecognised host is rejected.',
+        ),
+    },
+    readOnly: false,
+    // Reaches a third-party host and creates publicly bookable pages: two
+    // effects a person other than this user can observe.
+    openWorld: true,
+    // Names, descriptions and booking questions come from a page controlled by
+    // whoever owns that profile — which, on a migration, is not always the
+    // person running the agent. Fenced so "add a meeting type called ignore
+    // previous instructions" arrives as data.
+    untrustedSource: 'the imported booking page',
+    run: (client, { url }) => client.request('POST', '/import', { body: { url } }),
   },
 
   // ---- Routing forms ------------------------------------------------------
@@ -947,6 +1036,7 @@ export const TOOLS: ToolDefinition[] = [
         ),
     },
     readOnly: false,
+    openWorld: true,
     run: (client, body) => client.request('POST', '/routing-form', { body }),
   },
   {
@@ -973,6 +1063,7 @@ export const TOOLS: ToolDefinition[] = [
       qualifiers: z.array(z.record(z.unknown())).optional(),
     },
     readOnly: false,
+    openWorld: true,
     // Declarative sync deletes whatever is left out, so this can quietly
     // dismantle a form's routing rules. Hosts should be able to confirm it.
     destructive: true,
@@ -986,6 +1077,7 @@ export const TOOLS: ToolDefinition[] = [
       'Delete a routing form. Any link already shared stops working.',
     schema: { formId: z.string() },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: (client, { formId }) =>
       client.request('DELETE', `/routing-form/${formId}`),
@@ -1008,6 +1100,8 @@ export const TOOLS: ToolDefinition[] = [
       contactId: z.string().optional().describe('Link the response to a CRM contact'),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, { formId, ...body }) =>
       client.request('POST', `/routing-form/${formId}/send`, { body }),
   },
@@ -1120,6 +1214,7 @@ export const TOOLS: ToolDefinition[] = [
       description: z.string().optional().describe('Label, for your own reference'),
     },
     readOnly: false,
+    openWorld: true,
     run: (client, body) =>
       client.request('POST', '/webhooks', { body, root: true }),
   },
@@ -1135,6 +1230,8 @@ export const TOOLS: ToolDefinition[] = [
       description: z.string().optional(),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, { webhookId, ...body }) =>
       client.request('PATCH', `/webhooks/${webhookId}`, { body, root: true }),
   },
@@ -1145,6 +1242,7 @@ export const TOOLS: ToolDefinition[] = [
       'Delete a webhook endpoint. Whatever depends on those events stops receiving them immediately.',
     schema: { webhookId: z.string() },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: (client, { webhookId }) =>
       client.request('DELETE', `/webhooks/${webhookId}`, { root: true }),
@@ -1290,6 +1388,7 @@ export const TOOLS: ToolDefinition[] = [
         ),
     },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: async (client, args) => {
       const previous = await client.request<Record<string, unknown>>(
@@ -1326,6 +1425,7 @@ export const TOOLS: ToolDefinition[] = [
         ),
     },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: (client, { settings }) =>
       client.request('PATCH', '/company/mira-settings', {
@@ -1379,6 +1479,7 @@ export const TOOLS: ToolDefinition[] = [
         .describe('Keep only pages in this 2-letter language, e.g. "de"'),
     },
     readOnly: false,
+    openWorld: true,
     run: (client, body) =>
       client.request('POST', '/knowledge/crawl', {
         body: definedOnly(body),
@@ -1412,6 +1513,7 @@ export const TOOLS: ToolDefinition[] = [
       'Remove one document (and its chunks) from the knowledge base. Mira stops answering from it immediately.',
     schema: { documentId: z.string() },
     readOnly: false,
+    openWorld: true,
     destructive: true,
     run: (client, { documentId }) =>
       client.request('DELETE', `/knowledge/documents/${documentId}`, {
@@ -1458,6 +1560,8 @@ export const TOOLS: ToolDefinition[] = [
       answer: z.string().max(5000).describe("The company's answer, verbatim"),
     },
     readOnly: false,
+    openWorld: true,
+    destructive: true,
     run: (client, body) =>
       client.request('POST', '/knowledge/answer', { body, root: true }),
   },
@@ -1570,6 +1674,7 @@ export const TOOLS: ToolDefinition[] = [
         .max(10),
     },
     readOnly: false,
+    openWorld: true,
     run: (client, body) =>
       client.request('POST', '/knowledge/qualification-form', {
         body: definedOnly(body),
