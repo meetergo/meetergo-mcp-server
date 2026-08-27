@@ -59,6 +59,17 @@ remote URL and headers:
 Works with Claude Desktop, Claude Code, Cursor, or anything else that speaks
 MCP.
 
+### Cursor and Grok Bot
+
+This repository includes the Cursor Marketplace plugin used by both Cursor and
+Grok Bot. Install **meetergo** from Settings, Plugins, Marketplace, then finish
+the browser sign-in. The plugin connects to the hosted endpoint and uses the
+public PKCE client id `mcp-cursor`; there is no client secret or token to paste.
+
+For local review before the marketplace listing is published, load this
+repository as a local Cursor plugin. Its `.cursor-plugin/plugin.json` manifest
+points at `mcp.json`, which contains the same hosted URL and OAuth client id.
+
 ### Scope the token
 
 When you create the token you can limit it to the capabilities the agent

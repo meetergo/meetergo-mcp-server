@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "meetergo": {
+      "type": "http",
+      "url": "https://mcp.meetergo.com/mcp",
+      "auth": {
+        "CLIENT_ID": "mcp-cursor",
+        "scopes": ["openid"]
+      }
+    }
+  }
+}

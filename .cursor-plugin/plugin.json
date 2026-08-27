@@ -1,0 +1,36 @@
+{
+  "name": "meetergo",
+  "displayName": "meetergo",
+  "version": "1.0.0",
+  "minClientVersions": {
+    "cursor": "3.13.0"
+  },
+  "description": "Check availability and book, reschedule, or cancel meetings.",
+  "author": {
+    "name": "meetergo GmbH",
+    "email": "support@meetergo.com"
+  },
+  "homepage": "https://developer.meetergo.com/mcp-server",
+  "repository": "https://github.com/meetergo/meetergo-mcp-server",
+  "license": "MIT",
+  "logo": "mcpb/icon.png",
+  "keywords": [
+    "meetergo",
+    "scheduling",
+    "calendar",
+    "meetings",
+    "availability",
+    "crm",
+    "mcp"
+  ],
+  "category": "integrations",
+  "tags": [
+    "meetergo",
+    "scheduling",
+    "calendar",
+    "meetings",
+    "productivity",
+    "mcp"
+  ],
+  "mcpServers": "./mcp.json"
+}
