@@ -3,7 +3,7 @@
   "name": "com.meetergo/mcp-server",
   "title": "meetergo",
   "description": "Book and reschedule meetings, manage contacts, and set up meetergo's website assistant.",
-  "version": "0.6.36",
+  "version": "0.6.37",
   "repository": {
     "url": "https://github.com/meetergo/meetergo-mcp-server",
     "source": "github"
