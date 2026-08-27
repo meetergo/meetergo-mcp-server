@@ -132,6 +132,18 @@ describe('meetergo MCP tool surface', () => {
     }
   })
 
+  it('keeps directory descriptions self-contained', () => {
+    const toolNames = new Set(TOOLS.map((tool) => tool.name))
+
+    for (const tool of TOOLS) {
+      const referencedTools =
+        tool.description
+          .match(/[a-z]+(?:_[a-z]+)+/g)
+          ?.filter((name) => toolNames.has(name)) ?? []
+      expect(referencedTools, tool.name).toEqual([])
+    }
+  })
+
   it('keeps the submitted annotations identical to the runtime tools', async () => {
     const { readFileSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')

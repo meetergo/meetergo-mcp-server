@@ -25,6 +25,7 @@ import {
 } from './oauth-gateway.js'
 import {
   MCP_ENDPOINT_PATH,
+  OIDC_AUTHENTICATION_SCOPE,
   PROTECTED_RESOURCE_METADATA_PATHS,
   protectedResourceMetadata,
 } from './oauth-metadata.js'
@@ -189,11 +190,11 @@ function unauthorized(
   reason?: string,
 ): void {
   const params: string[] = []
-  // No `scope` parameter: this resource enforces no scopes, and naming one that
-  // is not assigned to the client makes Keycloak fail the first redirect with
-  // invalid_scope. See the header of oauth-metadata.ts.
   if (config.oauth) {
-    params.push(`resource_metadata="${config.metadataUrl}"`)
+    params.push(
+      `resource_metadata="${config.metadataUrl}"`,
+      `scope="${OIDC_AUTHENTICATION_SCOPE}"`,
+    )
   }
   const detail = reason ? reflected(reason) : undefined
   if (detail) {

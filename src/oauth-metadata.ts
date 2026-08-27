@@ -47,8 +47,25 @@ export const PROTECTED_RESOURCE_METADATA_PATHS: readonly string[] = [
 ]
 
 /**
- * This server deliberately advertises NO `scopes_supported` and no `scope` in
- * its 401 challenge.
+ * Minimum OAuth scope requested by the 401 challenge.
+ *
+ * `openid` identifies this as an OpenID Connect authorization flow without
+ * asking for any optional identity data or realm-wide scopes. Pinning the
+ * request here is important: clients otherwise fall back to the authorization
+ * server's realm-wide `scopes_supported`, which can include scopes that are not
+ * assigned to the pre-registered MCP client and makes Keycloak reject the
+ * authorization request with `invalid_scope`.
+ *
+ * Keycloak still applies the client's configured default scopes, including the
+ * `mcp-audience` mapper that this server validates. Do not add meetergo
+ * capability names here: unlike `openid`, those would claim a resource
+ * authorization boundary that exchanged OAuth tokens do not currently enforce.
+ */
+export const OIDC_AUTHENTICATION_SCOPE = 'openid'
+
+/**
+ * This server deliberately advertises NO `scopes_supported` in its protected
+ * resource metadata.
  *
  * The five names that look like they belong here (`scheduling`, `crm`, `mira`,
  * `forms`, `account`) are Personal-Access-Token capabilities, enforced only in
@@ -59,7 +76,9 @@ export const PROTECTED_RESOURCE_METADATA_PATHS: readonly string[] = [
  *
  * It would also break the flow outright: Keycloak rejects an authorization
  * request naming a scope that is not assigned to the client, so an advertised
- * `scheduling` fails the FIRST redirect with invalid_scope.
+ * `scheduling` fails the FIRST redirect with invalid_scope. The 401 challenge
+ * separately requests only {@link OIDC_AUTHENTICATION_SCOPE}; that is an
+ * authentication protocol scope, not a meetergo capability.
  *
  * The full rationale, and the condition for changing this, lives next to the
  * realm definition in infra/keycloak/realm/clients.tf. Add scopes here only in

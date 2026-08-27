@@ -136,6 +136,7 @@ const MEETING_CHANNELS = [
   'jitsi',
   'nextcloudTalk',
   'openTalk',
+  'alfaview',
 ] as const
 
 /**
@@ -326,7 +327,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_me',
     title: 'Get the authenticated user',
     description:
-      'Return the account this server is authenticated as, plus a `plan` block (tier, relevant caps) when the API exposes it. Call it first to confirm the token works and to get the userId — it is the cheapest way to tell a bad token apart from a genuinely empty calendar. Plan limits gate individual actions, never this connection: do not bring up upgrading unless an action actually hits a limit.',
+      'Return the authenticated account and, when available, its plan tier and relevant caps. This is a low-cost authentication check that distinguishes a bad token from an empty calendar. Plan data explains action-specific limits; it does not gate the connection itself.',
     schema: {},
     readOnly: true,
     run: async (client) => {
@@ -342,7 +343,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_meeting_types',
     title: 'List meeting types',
     description:
-      'List the meeting types that can be booked. Start here: every booking needs a meetingTypeId, and the duration and host come from the meeting type.',
+      "List the authenticated user's bookable meeting types, including the identifier, duration and host data required for a booking.",
     schema: {},
     readOnly: true,
     run: (client) => client.request('GET', '/meeting-type'),
@@ -351,9 +352,9 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_availability',
     title: 'Get available slots',
     description:
-      "Get bookable time slots for a meeting type in a date range. Returns the slots a booking will actually accept. Do not infer availability from the calendar. Use only starts from the response's slotsStartUtc list.",
+      "Return a meeting type's bookable starts within a date range. The slotsStartUtc values are the starts accepted by booking validation; calendar events alone are not availability.",
     schema: {
-      meetingTypeId: z.string().describe('From list_meeting_types'),
+      meetingTypeId: z.string().describe('Meeting type identifier'),
       start: iso.describe('Start of the search window'),
       end: iso.describe('End of the search window'),
       timezone: z
@@ -366,7 +367,7 @@ export const TOOLS: ToolDefinition[] = [
         .positive()
         .optional()
         .describe(
-          'Override the meeting type duration in minutes, where the meeting type allows it. Pass the same value to book_appointment as `duration`, or the booking reverts to the default length.',
+          'Override the meeting type duration in minutes where the meeting type allows it. A booking for this result requires the same duration value.',
         ),
       existingAppointmentId: z
         .string()
@@ -406,17 +407,17 @@ export const TOOLS: ToolDefinition[] = [
     name: 'book_appointment',
     title: 'Book an appointment',
     description:
-      'Book a slot. Use a start time returned by get_availability. An unlisted slot is rejected. Creates a real appointment and sends real invitations. A confirmed bookingState means the appointment exists. A pending_confirmation state means it is NOT booked yet. Provide either fullName, or firstName and lastName.',
+      'Create a real appointment for a start present in the meeting type availability results and send invitations. An unlisted start is rejected. A confirmed bookingState means the appointment exists; pending_confirmation means it is not booked yet. Either fullName or both firstName and lastName are required.',
     schema: {
       meetingTypeId: z.string(),
-      start: iso.describe('Slot start, from get_availability'),
+      start: iso.describe('Slot start returned by an availability query'),
       duration: z
         .number()
         .int()
         .positive()
         .optional()
         .describe(
-          'Length in minutes. Required only if you passed meetingDuration to get_availability — otherwise the meeting type decides.',
+          'Length in minutes. Required only when the availability query used a duration override; otherwise the meeting type decides.',
         ),
       email: z.string().email().describe('Attendee email'),
       firstName: z.string().optional(),
@@ -557,7 +558,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'cancel_appointment',
     title: 'Cancel an appointment',
     description:
-      'Cancel an appointment and notify attendees. For a group booking pass attendeeId to remove one person, or cancelAll to cancel the whole appointment. Passing neither is rejected, so a bulk cancel is never accidental. The response distinguishes attendee_removed from cancelled.',
+      'Cancel an appointment and notify attendees. For a group booking, attendeeId removes one person while cancelAll cancels the whole appointment. Requests with neither are rejected. The response distinguishes attendee_removed from cancelled.',
     schema: {
       appointmentId: z.string(),
       attendeeId: z.string().optional().describe('Remove a single attendee'),
@@ -590,7 +591,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_appointments',
     title: 'List appointments',
     description:
-      'List appointments with pagination and filters. Use for "what is on my calendar" and for finding an appointmentId to change. Each item has a confirmed or cancelled status. Never report a cancelled appointment as upcoming. Pages are 0-indexed.',
+      'Return appointments with pagination and filters, including the appointmentId needed for changes. Every item carries a confirmed or cancelled status; cancelled items are not upcoming appointments. Pages are 0-indexed.',
     schema: {
       page: z
         .number()
@@ -600,7 +601,12 @@ export const TOOLS: ToolDefinition[] = [
         .describe('0-indexed page number. Defaults to 0.'),
       pageSize: z.number().int().min(1).max(100).optional(),
       start: iso.optional().describe('Only appointments starting at or after this'),
-      end: iso.optional().describe('Only appointments starting at or before this'),
+      end: z
+        .string()
+        .describe(
+          'ISO 8601 timestamp. Only appointments starting at or before this.',
+        )
+        .optional(),
       search: z.string().optional().describe('Free-text search'),
       status: z.string().optional(),
       meetingTypeId: z.string().optional(),
@@ -622,7 +628,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_todays_appointments',
     title: "Get today's appointments",
     description:
-      "Today's appointments for the authenticated user. Cheaper and more precise than filtering list_appointments by date.",
+      "Return today's appointments for the authenticated user. This specialised query is cheaper and more precise than a general date-filtered appointment list.",
     schema: {},
     readOnly: true,
     run: async (client) =>
@@ -635,7 +641,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_appointment',
     title: 'Get an appointment',
     description:
-      'Full detail for one appointment: status, attendees and their attendeeIds, hosts, location, notes. Needed before add_guest or a per-attendee cancel, both of which take an attendeeId this returns. Check status before reporting a booking as active.',
+      'Return full detail for one appointment: status, attendees and their attendeeIds, hosts, location and notes. The attendeeIds support guest additions and per-attendee cancellation. The status indicates whether the booking is active.',
     schema: { appointmentId: z.string() },
     readOnly: true,
     run: async (client, { appointmentId }) =>
@@ -648,12 +654,12 @@ export const TOOLS: ToolDefinition[] = [
     name: 'add_guest',
     title: 'Add a guest to an appointment',
     description:
-      'Add one guest email to an appointment. They receive the invitation and updates. Takes the attendeeId of the attendee the guest belongs to — get it from get_appointment. Call once per guest.',
+      'Add one guest email to an appointment so they receive the invitation and updates. Requires the attendeeId returned with appointment details and accepts one guest per call.',
     schema: {
       appointmentId: z.string(),
       attendeeId: z
         .string()
-        .describe('The attendee to attach the guest to, from get_appointment'),
+        .describe('The attendee identifier returned with appointment details'),
       email: z.string().email(),
     },
     readOnly: false,
@@ -666,7 +672,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_appointment_notes',
     title: 'Update appointment notes',
     description:
-      'Replace the host-side note on an appointment. Use it to write back call prep or an outcome summary. Replaces the note rather than appending — read get_appointment first if you need to keep what is there.',
+      'Replace the host-side note on an appointment with call preparation or an outcome summary. This is replacement rather than append, so retained existing text must be included in the new note.',
     schema: {
       appointmentId: z.string(),
       note: z.string(),
@@ -683,7 +689,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_one_time_booking_link',
     title: 'Create a one-time booking link',
     description:
-      'Generate a single-use booking link for a meeting type. Use when sending someone a link to pick their own slot, instead of booking on their behalf — no attendee details needed and the link cannot be reshared.',
+      'Generate a single-use booking link for a meeting type so someone can choose their own slot. No attendee details are needed and the link cannot be reshared.',
     schema: { meetingTypeId: z.string() },
     readOnly: false,
     openWorld: true,
@@ -694,7 +700,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'search_contacts',
     title: 'Search CRM contacts',
     description:
-      'Search the CRM by name, email, phone or tag. Use it to check whether someone already exists before creating them, and to find a contactId.',
+      'Search the CRM by name, email, phone or tag. Results expose contactIds and support duplicate checks before contact creation.',
     schema: {
       searchTerm: z.string().optional().describe('Matches name, email or phone'),
       tags: z.array(z.string()).optional(),
@@ -712,13 +718,13 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_contact',
     title: 'Get a contact',
     description:
-      'Full contact record including linked appointments and form answers. Look it up by contactId, or by the attendeeId from an appointment — that is how you get from "who is on this booking" to "what do we know about them".',
+      'Return a full contact record including linked appointments and form answers. Accepts either a contactId or an attendeeId from an appointment and links booking identity to the stored contact.',
     schema: {
       contactId: z.string().optional(),
       attendeeId: z
         .string()
         .optional()
-        .describe('From get_appointment. Use when you only have the booking.'),
+        .describe('Attendee identifier returned with appointment details'),
     },
     readOnly: true,
     // async so the guard rejects rather than throwing synchronously — the
@@ -735,7 +741,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_contact',
     title: 'Create a contact',
     description:
-      'Create a CRM contact. Either email or phoneNumber is required. Search first — this does not deduplicate.',
+      'Create a CRM contact. Either email or phoneNumber is required. Existing contacts are not deduplicated.',
     schema: {
       firstName: z.string().optional(),
       lastName: z.string().optional(),
@@ -760,7 +766,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_contact',
     title: 'Update a contact',
     description:
-      'Update a CRM contact. Only the fields you send change. Tags replace the existing list rather than merging, so read the contact first if you are adding one.',
+      'Update a CRM contact. Only supplied fields change. Tags replace the existing list rather than merging, so retained tags must be included.',
     schema: {
       contactId: z.string(),
       firstName: z.string().optional(),
@@ -781,7 +787,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_calendar_connections',
     title: 'List calendar connections',
     description:
-      'List connected calendars (Google, Outlook, CalDAV). Use to check whether a host actually has a calendar attached before diagnosing why availability looks wrong.',
+      'List connected calendars (Google, Outlook and CalDAV). The result shows whether a host has a calendar attached and supports availability diagnosis.',
     schema: {},
     readOnly: true,
     run: (client) => client.request('GET', '/calendar-connections/connections'),
@@ -792,9 +798,9 @@ export const TOOLS: ToolDefinition[] = [
     name: 'send_quick_email',
     title: 'Email an attendee',
     description:
-      'Send a one-off email to an attendee — a follow-up, a prep note, directions. Takes an attendeeId from get_appointment. Rate limited to 5 per 5 minutes.',
+      'Send a one-off email to an attendee, such as a follow-up, preparation note or directions. Requires an attendeeId from appointment details. Rate limited to 5 per 5 minutes.',
     schema: {
-      attendeeId: z.string().describe('From get_appointment'),
+      attendeeId: z.string().describe('Attendee identifier from appointment details'),
       title: z.string().describe('Subject line'),
       content: z.string().describe('Body of the email'),
     },
@@ -808,7 +814,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_meeting_transcription',
     title: 'Store a transcript or summary',
     description:
-      'Attach a meeting transcript and/or AI summary (markdown) to an appointment. meetergo does not record calls — feed this from a notetaker. Only the fields you send change; pass null to clear one.',
+      'Attach a meeting transcript and/or AI summary in markdown to an appointment. meetergo does not record calls, so the caller supplies the content. Only supplied fields change; null clears one.',
     schema: {
       appointmentId: z.string(),
       transcription: z
@@ -835,7 +841,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_meeting_type',
     title: 'Get a meeting type',
     description:
-      'Full configuration of one meeting type: duration, channel, buffers, booking questions, reminders, host or queue. Read this before update_meeting_type so you know what you are changing.',
+      'Return the full configuration of one meeting type: duration, channel, buffers, booking questions, reminders, host or queue. The result exposes the current values needed for a safe update.',
     schema: { meetingTypeId: z.string() },
     readOnly: true,
     run: (client, { meetingTypeId }) =>
@@ -845,7 +851,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_meeting_type',
     title: 'Create a meeting type',
     description:
-      'Create a new bookable meeting type, owned by the authenticated user. Creates a real, publicly bookable page as soon as it exists. The URL slug is generated from the name; change it afterwards with update_meeting_type.',
+      'Create a new meeting type owned by the authenticated user. It becomes a real, publicly bookable page immediately. The URL slug is generated from the name and remains editable.',
     schema: {
       ...meetingInfoShape,
       spots: z
@@ -958,7 +964,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'import_booking_page',
     title: 'Import a booking page from another scheduler',
     description:
-      'Recreate an existing public booking page in meetergo from its URL — Calendly and several other schedulers are recognised automatically from the link. Reads the public profile, then creates one meeting type per event type with its duration, location and booking questions. Nothing is read from the old account beyond what its public page already shows, and nothing there is changed. Import is additive: it never edits or removes meeting types that already exist here, so running it twice creates duplicates. Returns what was created, what failed and why, so you can report both to the user rather than claiming a clean import.',
+      'Recreate an existing public booking page in meetergo from its URL. Calendly and several other schedulers are recognised automatically. The tool reads only the public profile and creates one meeting type per visible event type with its duration, location and booking questions. It never modifies the source account. Imports are additive, so running it twice creates duplicates. The response lists both created items and failures.',
     schema: {
       url: z
         .string()
@@ -1002,7 +1008,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_routing_form',
     title: 'Create a routing form',
     description:
-      'Create a routing form or funnel. Fields come from data fields (see list_data_fields); qualifiers route on the answers. Include one qualifier with isFallback true as the default route.',
+      'Create a routing form or funnel. Fields reference existing reusable data fields and qualifiers route on the answers. A qualifier with isFallback true provides the default route.',
     schema: {
       name: z.string(),
       // Required by the API, with no default.
@@ -1043,7 +1049,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_routing_form',
     title: 'Update a routing form',
     description:
-      'Update a routing form. Sending qualifiers, fields or funnelSteps REPLACES them: qualifiers you omit are deleted, and fields and steps are rebuilt from what you send. Read get_routing_form first and send the full list, or leave those three out to change only the name, slug or progress bar.',
+      'Update a routing form. Supplying qualifiers, fields or funnelSteps replaces each entire collection, so omitted items are deleted. Leaving those collections out changes only the name, slug or progress bar.',
     schema: {
       formId: z.string(),
       name: z.string().optional(),
@@ -1109,7 +1115,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_form_recipients',
     title: 'List form recipients',
     description:
-      'Who a routing form was sent to, with status (sent, opened, completed) and timestamps. Use to chase the ones who have not answered.',
+      'List who a routing form was sent to, with sent, opened or completed status and timestamps. The result identifies recipients who have not answered.',
     schema: { formId: z.string() },
     readOnly: true,
     run: (client, { formId }) =>
@@ -1119,7 +1125,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_data_fields',
     title: 'List data fields',
     description:
-      'List the reusable form fields shared across routing forms. Check here before creating a duplicate. Returns 50 at a time; page with offset.',
+      'List the reusable form fields shared across routing forms, including fields that may already match a planned addition. Returns 50 at a time with offset pagination.',
     schema: { limit: listLimit, offset: listOffset },
     readOnly: true,
     run: (client, query) => client.request('GET', '/data-field', { query }),
@@ -1154,7 +1160,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'bulk_create_contacts',
     title: 'Bulk-create contacts',
     description:
-      'Create many contacts at once, for an import. Each needs email or phoneNumber. Up to 1000 per call and throttled to 3 calls per minute, so batch rather than looping.',
+      'Create many contacts in one import. Each needs email or phoneNumber. A call accepts up to 1000 contacts and the endpoint is limited to 3 calls per minute.',
     schema: {
       contacts: z
         .array(
@@ -1198,7 +1204,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_webhooks',
     title: 'List webhooks',
     description:
-      'List webhook endpoints for the company. Maximum six exist at once, so check here before creating one.',
+      'List webhook endpoints for the company. The result shows current subscriptions against the maximum of six endpoints.',
     schema: {},
     readOnly: true,
     run: (client) => client.request('GET', '/webhooks', { root: true }),
@@ -1253,7 +1259,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_mira_settings',
     title: 'Get Mira settings',
     description:
-      "Read the company's resolved Mira (AI assistant) configuration: master switch, assistant profiles, website chat widget (webChat, including its server-minted publicKey), data-access toggles. Save this output before changing anything — restore_mira_settings takes it back verbatim.",
+      "Return the company's resolved Mira configuration: master switch, assistant profiles, website chat widget including its server-minted publicKey, and data-access toggles. The result is suitable as a rollback snapshot.",
     schema: {},
     readOnly: true,
     run: (client) =>
@@ -1263,7 +1269,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_mira_settings',
     title: 'Update Mira settings',
     description:
-      'Partially update Mira configuration (admin only). Fields left out keep their current value; webChat merges field-by-field, assistantProfiles replaces the whole list. Saving any webChat field mints the widget publicKey even while enabled stays false — a saved-but-disabled widget is the DRAFT state, testable via the preview URL from get_mira_widget_embed. Returns { previous, current } so the caller can keep previous as a rollback snapshot. The API rejects unknown fields.',
+      'Partially update Mira configuration (admin only). Omitted fields keep their current value; webChat merges field-by-field and assistantProfiles replaces the whole list. Saving any webChat field mints the widget publicKey even while enabled stays false, creating a previewable draft state. The response includes previous and current settings for rollback. The API rejects unknown fields.',
     schema: {
       enabled: z
         .boolean()
@@ -1416,7 +1422,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'restore_mira_settings',
     title: 'Restore Mira settings from a snapshot',
     description:
-      'Roll Mira configuration back to a snapshot taken earlier (the `previous` object from update_mira_settings, or a saved get_mira_settings result). Server-managed fields (publicKey, the mirrored channels.webChat list) are stripped automatically — the minted publicKey survives a rollback, which is harmless while the widget is disabled.',
+      'Roll Mira configuration back to a previously returned settings snapshot. Server-managed fields such as publicKey and the mirrored channels.webChat list are stripped automatically. The minted publicKey survives a rollback and remains harmless while the widget is disabled.',
     schema: {
       settings: z
         .record(z.unknown())
@@ -1437,7 +1443,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_mira_widget_embed',
     title: 'Get the Mira widget install snippet',
     description:
-      'The embed snippet a website owner pastes before </body>, plus the preview URL for testing a saved-but-disabled widget. Requires the webChat publicKey, which is minted on the first update_mira_settings call that touches webChat.',
+      'Return the embed snippet a website owner pastes before </body>, plus the preview URL for testing a saved-but-disabled widget. Requires the webChat publicKey minted when widget configuration is first saved.',
     schema: {},
     readOnly: true,
     run: async (client) => {
@@ -1465,7 +1471,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'crawl_company_website',
     title: 'Crawl a website into the knowledge base',
     description:
-      "Start a background crawl of a website into the company's Mira knowledge base: sitemap plus same-origin links, readable text extracted, chunked and embedded. Poll get_crawl_status for progress. Re-crawling an unchanged site ingests 0 new pages — that is success, not failure. Requires the file-uploads entitlement (Growth and up).",
+      "Start a background crawl of a website into the company's Mira knowledge base, covering its sitemap and same-origin links while extracting, chunking and embedding readable text. Crawl progress remains available through status reads. Re-crawling an unchanged site ingests 0 new pages and is still successful. Requires the file-uploads entitlement (Growth and up).",
     schema: {
       url: z
         .string()
@@ -1524,7 +1530,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'propose_conversion_setup',
     title: 'Propose a Mira setup from a website',
     description:
-      "Read a sample of a website and propose a complete assistant setup for it: persona, welcome message, grounded instructions, qualification questions, quick actions, the site's own privacy/imprint links, and a knowledge probe for verifying grounded answers. Reads only — nothing is stored and nothing is configured. Feed the result to update_mira_settings to apply it as a draft. Takes up to a minute.",
+      "Read a sample of a website and propose a complete assistant setup: persona, welcome message, grounded instructions, qualification questions, quick actions, the site's own privacy and imprint links, and a knowledge probe. The result is a settings draft; nothing is stored or configured. Takes up to a minute.",
     schema: {
       url: z.string().url().describe("The website to analyse, e.g. the customer's homepage"),
       useCase: z
@@ -1554,7 +1560,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'answer_visitor_question',
     title: 'Teach the assistant an answer',
     description:
-      "Add a question-and-answer pair to the company's knowledge base, in the company's own words. Use it to close a gap a visitor hit. Answering the same question twice replaces the earlier answer rather than leaving two versions.",
+      "Add a question-and-answer pair to the company's knowledge base in the company's own words. This closes a visitor knowledge gap. Repeating the same question replaces the earlier answer rather than creating two versions.",
     schema: {
       question: z.string().max(300).describe('The question, as a visitor would ask it'),
       answer: z.string().max(5000).describe("The company's answer, verbatim"),
@@ -1569,7 +1575,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_conversation_insights',
     title: 'Website chat insights',
     description:
-      "What the website assistant did lately, and — the useful part — the questions visitors asked that it could not answer. Each is a gap you can close with answer_visitor_question.",
+      'Summarise recent website assistant activity and the visitor questions it could not answer. Unanswered questions identify gaps suitable for new knowledge entries.',
     schema: {
       days: z
         .number()
@@ -1591,7 +1597,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'search_company_knowledge',
     title: 'Search the company knowledge base',
     description:
-      'Semantic search over the knowledge base — the same retrieval Mira uses to answer visitors. Use it to verify what Mira will actually find for a question before going live.',
+      'Semantically search the knowledge base using the same retrieval Mira uses for visitor answers. The results validate grounded coverage for a question before launch.',
     schema: {
       query: z.string().min(1),
       k: z.number().int().min(1).max(10).optional().describe('Chunks to return, default 5'),
@@ -1608,7 +1614,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_setup_status',
     title: 'Where this account stands on the way to live',
     description:
-      'The launch checklist, as the dashboard computes it: bookable meeting type, assistant, knowledge, test drive, install, live — each with done/not-done and the concrete next move. Call it before proposing work (so you never redo what exists) and after each step (so you know what is left).',
+      'Return the dashboard launch checklist for bookable meeting type, assistant, knowledge, test drive, installation and live state. Each stage includes completion status and the concrete next move, making the result suitable before or after setup changes.',
     schema: {},
     readOnly: true,
     run: async (client) => {
@@ -1640,7 +1646,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_qualification_form',
     title: 'Turn qualification questions into a routing form',
     description:
-      "Create a real routing form from qualification questions (typically the `questions` from propose_conversion_setup): structured fields the company can edit in the form editor, plus a fallback rule routing every qualified visitor into the given meeting type (or a callback when none is given). Point the assistant profile's routingFormId at the returned formId and set webChat.qualify=true via update_mira_settings.",
+      "Create a real routing form from supplied qualification questions, with structured fields the company can edit and a fallback rule routing qualified visitors into a meeting type or callback. The returned formId is suitable for a qualifying web chat profile.",
     schema: {
       assistantName: z
         .string()
@@ -1685,7 +1691,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'run_test_drive',
     title: 'Prove the assistant works (scripted visitors)',
     description:
-      'Send scripted visitors at the saved assistant — a buyer who books, a lead who asks for a callback, an adversary probing for invented promises — and return pass/fail verdicts with full transcripts. Runs in preview mode: no bookings are created, no emails go out, and the widget does not need to be live; the result is stored so the launch checklist can show it. Takes about a minute; rate-limited to a few runs per hour. This is the proof step: show the user the verdicts instead of telling them it works.',
+      'Send scripted visitors to the saved assistant, including a buyer, a callback lead and an adversarial visitor, then return pass/fail verdicts with full transcripts. Preview mode creates no bookings or emails and does not require a live widget. The stored result feeds the launch checklist. Takes about a minute and is rate-limited to a few runs per hour.',
     schema: {},
     // Not readOnly: the verdict is persisted (it is what get_setup_status
     // reports as the test-drive step), and each call spends real model budget.
@@ -1724,7 +1730,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'verify_widget_install',
     title: 'Verify the widget is live on a website',
     description:
-      "Fetch a page of the customer's website and check it actually serves their Mira widget: the loader script AND their own embed key. The closing step of an install — run it after the user says they pasted the snippet, and celebrate only when it returns installed: true.",
+      "Fetch a page of the customer's website and verify that it serves both the Mira loader script and the customer's own embed key. Intended after the snippet is installed; installed is true only when both elements are present.",
     schema: {
       url: z
         .string()
