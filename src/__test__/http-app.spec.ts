@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { createRequestListener, type McpAppConfig } from '../http-app.js'
 import type { OAuthSupport } from '../oauth-gateway.js'
 import { TokenValidationError } from '../token-validation.js'
+import { SETUP_STATUS_TEMPLATE_URI, UI_MIME, UI_RESOURCE_META } from '../ui.js'
 
 const RESOURCE = 'https://mcp.meetergo.com/mcp'
 const METADATA_URL =
@@ -296,16 +297,16 @@ describe('what a refusal gives back to a stranger', () => {
 })
 
 describe('the 401 challenge', () => {
-  it('points at the canonical metadata document and names no scopes', async () => {
+  it('points at the canonical metadata document and requests only OpenID', async () => {
     await withServer({ oauth: workingOAuth }, async (base) => {
       const response = await fetch(`${base}/mcp`, { method: 'POST' })
       const challenge = response.headers.get('www-authenticate') ?? ''
 
       expect(response.status).toBe(401)
       expect(challenge).toContain(`resource_metadata="${METADATA_URL}"`)
-      // Naming a scope the realm has not assigned to the client fails the
-      // FIRST authorization redirect with invalid_scope.
-      expect(challenge).not.toContain('scope=')
+      expect(challenge.match(/scope="([^"]*)"/)?.[1].split(' ')).toEqual([
+        'openid',
+      ])
     })
   })
 
@@ -460,6 +461,47 @@ describe('request-size ceiling', () => {
     } finally {
       upstream.restore()
     }
+  })
+})
+
+describe('ChatGPT UI resources', () => {
+  it('serves the required component origin and CSP metadata', async () => {
+    await withServer({}, async (base) => {
+      const response = await fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer rgo-token',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'resources/read',
+          params: { uri: SETUP_STATUS_TEMPLATE_URI },
+        }),
+      })
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: {
+          contents: Array<{
+            uri: string
+            mimeType: string
+            text?: string
+            _meta?: unknown
+          }>
+        }
+      }
+      expect(body.result.contents[0]).toMatchObject({
+        uri: SETUP_STATUS_TEMPLATE_URI,
+        mimeType: UI_MIME,
+        _meta: UI_RESOURCE_META,
+      })
+      expect(body.result.contents[0]?.text).toContain(
+        'ui/notifications/tool-result',
+      )
+    })
   })
 })
 

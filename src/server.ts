@@ -9,11 +9,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { MeetergoApiError, type MeetergoClient } from './client.js'
 import { PROMPTS } from './prompts.js'
+import { TOOL_OUTPUTS, toStructuredContent } from './tool-outputs.js'
 import { TOOLS } from './tools.js'
 import {
   SETUP_STATUS_HTML,
   SETUP_STATUS_TEMPLATE_URI,
   UI_MIME,
+  UI_RESOURCE_META,
   UPGRADE_CARD_HTML,
   UPGRADE_CARD_TEMPLATE_URI,
 } from './ui.js'
@@ -25,6 +27,12 @@ export interface BuildServerOptions {
    * extra listings would just be noise there.
    */
   ui?: boolean
+}
+
+function outputSchemaFor(name: string) {
+  const schema = TOOL_OUTPUTS[name]
+  if (!schema) throw new Error(`tool ${name} has no output schema`)
+  return schema
 }
 
 export function buildServer(
@@ -41,7 +49,12 @@ export function buildServer(
         title: tool.title,
         description: tool.description,
         inputSchema: tool.schema,
+        // Declared on every tool: the ChatGPT app review flags the gap. The
+        // shapes are deliberately permissive — see tool-outputs.ts for why a
+        // strict one would break the tool instead of documenting it.
+        outputSchema: outputSchemaFor(tool.name),
         annotations: {
+          title: tool.title,
           readOnlyHint: tool.readOnly,
           // Booking and cancelling are not idempotent, and cancelling destroys
           // something. Hosts use these to decide what to confirm with a human,
@@ -54,7 +67,12 @@ export function buildServer(
           openWorldHint: tool.openWorld ?? false,
         },
         ...(options.ui && tool.name === 'get_setup_status'
-          ? { _meta: { 'openai/outputTemplate': SETUP_STATUS_TEMPLATE_URI } }
+          ? {
+              _meta: {
+                ui: { resourceUri: SETUP_STATUS_TEMPLATE_URI },
+                'openai/outputTemplate': SETUP_STATUS_TEMPLATE_URI,
+              },
+            }
           : {}),
       },
       async (args) => {
@@ -74,12 +92,11 @@ export function buildServer(
             : json
           return {
             content: [{ type: 'text' as const, text }],
-            // Mirror objects into structuredContent: the ChatGPT Apps SDK
-            // components read window.openai.toolOutput from here — without it
-            // the setup-status card renders blank.
-            ...(result && typeof result === 'object' && !Array.isArray(result)
-              ? { structuredContent: result as Record<string, unknown> }
-              : {}),
+            // Always present: the SDK rejects a result that has an output
+            // schema but no structured content. MCP Apps components receive
+            // this through ui/notifications/tool-result; ChatGPT also mirrors
+            // it to window.openai.toolOutput for compatibility.
+            structuredContent: toStructuredContent(result),
           }
         } catch (error: unknown) {
           // Returned as an error result, not thrown: the agent should be able
@@ -131,25 +148,37 @@ export function buildServer(
   }
 
   if (options.ui) {
-    const templates: [string, string, string][] = [
+    const templates: [string, string, string, string][] = [
       [
         'setup-status',
         SETUP_STATUS_TEMPLATE_URI,
         SETUP_STATUS_HTML,
+        'A six-step meetergo setup checklist with completion status.',
       ],
       [
         'upgrade-card',
         UPGRADE_CARD_TEMPLATE_URI,
         UPGRADE_CARD_HTML,
+        'The meetergo plan limit reached by a requested action and its upgrade path.',
       ],
     ]
-    for (const [name, uri, html] of templates) {
+    for (const [name, uri, html, description] of templates) {
       server.registerResource(
         name,
         uri,
         { mimeType: UI_MIME },
         async () => ({
-          contents: [{ uri, mimeType: UI_MIME, text: html }],
+          contents: [
+            {
+              uri,
+              mimeType: UI_MIME,
+              text: html,
+              _meta: {
+                ...UI_RESOURCE_META,
+                'openai/widgetDescription': description,
+              },
+            },
+          ],
         }),
       )
     }

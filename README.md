@@ -59,17 +59,6 @@ remote URL and headers:
 Works with Claude Desktop, Claude Code, Cursor, or anything else that speaks
 MCP.
 
-### Cursor and Grok Bot
-
-This repository includes the Cursor Marketplace plugin used by both Cursor and
-Grok Bot. Install **meetergo** from Settings, Plugins, Marketplace, then finish
-the browser sign-in. The plugin connects to the hosted endpoint and uses the
-public PKCE client id `mcp-cursor`; there is no client secret or token to paste.
-
-For local review before the marketplace listing is published, load this
-repository as a local Cursor plugin. Its `.cursor-plugin/plugin.json` manifest
-points at `mcp.json`, which contains the same hosted URL and OAuth client id.
-
 ### Scope the token
 
 When you create the token you can limit it to the capabilities the agent
@@ -80,15 +69,24 @@ scheduling-only token cannot read your knowledge base.
 
 ### Signing in instead of pasting a token
 
-Not yet. The hosted endpoint authenticates with a Personal Access Token or a
-Platform API Key today, and nothing else. OAuth sign-in is not enabled on it, so
-a host that probes for it is told so — `/.well-known/oauth-protected-resource`
-answers 404 — rather than being walked into an authorization flow that cannot
-finish.
+OAuth sign-in is live on the hosted endpoint. Discovery is published at
+`/.well-known/oauth-protected-resource` (RFC 9728), so a capable client can
+start the flow from the MCP URL. Clients are pre-registered rather than created
+through dynamic client registration. For a Claude custom connector, enter the
+public client id `mcp-claude` under Advanced settings and leave the client secret
+blank. The directory clients for Claude and ChatGPT are configured with their
+respective providers.
 
-When it is enabled it will need no credential from support: the connector takes
-a public client id published on this page, with no client secret. There is no
-dynamic client registration either way.
+#### Cursor and Grok Bot
+
+This repository includes the Cursor Marketplace plugin used by both Cursor and
+Grok Bot. Install **meetergo** from Settings, Plugins, Marketplace, then finish
+the browser sign-in. The plugin connects to the hosted endpoint and uses the
+public PKCE client id `mcp-cursor`; there is no client secret or token to paste.
+
+For local review before the marketplace listing is published, load this
+repository as a local Cursor plugin. Its `.cursor-plugin/plugin.json` manifest
+points at `mcp.json`, which contains the same hosted URL and OAuth client id.
 
 A Personal Access Token works in every MCP client, on every plan including Free.
 That is what the rest of this page assumes.

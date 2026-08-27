@@ -3,20 +3,46 @@
  * entry only (stdio clients have no way to render them; the extra listing
  * would just be noise there).
  *
- * The contract: a tool names its template via `_meta["openai/outputTemplate"]`,
- * ChatGPT fetches the `ui://` resource (mime `text/html+skybridge`), renders it
- * in a sandboxed iframe, and the component reads the tool's structured output
- * from `window.openai.toolOutput`. Everything below is defensive: a component
- * that receives no data renders nothing rather than a broken card.
+ * The contract: a tool names its template via `_meta.ui.resourceUri`, the host
+ * fetches the `ui://` MCP Apps resource and renders it in a sandboxed iframe,
+ * then sends the structured result over the `ui/notifications/tool-result`
+ * bridge. ChatGPT's `window.openai.toolOutput` remains a compatibility fallback.
+ * Everything below is defensive: a component that receives no data renders
+ * nothing rather than a broken card.
  *
  * These need live verification inside ChatGPT developer mode before directory
  * submission — the sandbox's exact capabilities move faster than any doc.
  */
 
-export const UI_MIME = 'text/html+skybridge'
+export const UI_MIME = 'text/html;profile=mcp-app'
 
-export const SETUP_STATUS_TEMPLATE_URI = 'ui://meetergo/setup-status.html'
-export const UPGRADE_CARD_TEMPLATE_URI = 'ui://meetergo/upgrade-card.html'
+// Hosts cache UI resources by URI, so any HTML/JS/CSS change needs a new key.
+export const SETUP_STATUS_TEMPLATE_URI = 'ui://meetergo/setup-status/v2.html'
+export const UPGRADE_CARD_TEMPLATE_URI = 'ui://meetergo/upgrade-card/v2.html'
+
+/**
+ * ChatGPT requires every submitted UI resource to declare both its sandbox
+ * policy and a plugin-owned origin. These components are self-contained: they
+ * use inline CSS/JS, make no network requests and embed no frames, so empty
+ * allowlists are the least-privilege policy. Keep the legacy aliases until the
+ * ChatGPT scanner stops checking them alongside the MCP Apps fields.
+ */
+export const UI_RESOURCE_META = {
+  ui: {
+    csp: {
+      connectDomains: [],
+      resourceDomains: [],
+    },
+    domain: 'https://mcp.meetergo.com',
+    prefersBorder: true,
+  },
+  'openai/widgetCSP': {
+    connect_domains: [],
+    resource_domains: [],
+  },
+  'openai/widgetDomain': 'https://mcp.meetergo.com',
+  'openai/widgetPrefersBorder': true,
+} as const
 
 /** Shared look: meetergo violet, system stack, calm card. */
 const BASE_CSS = `
@@ -62,19 +88,20 @@ export const SETUP_STATUS_HTML = `<!doctype html>
     install: 'Widget installed on the site',
     live: 'Live for visitors',
   };
-  const data = window.openai && window.openai.toolOutput;
-  const status = data && data.steps ? data : null;
-  if (status) {
+  function renderStatus(data) {
+    const status = data && data.steps ? data : null;
+    if (!status) return;
     document.getElementById('root').hidden = false;
     const remaining = status.total - status.done;
     document.getElementById('headline').textContent =
-      remaining === 0 ? 'Live — visitors can book through the assistant'
+      remaining === 0 ? 'Live. Visitors can book through the assistant'
         : remaining + (remaining === 1 ? ' step' : ' steps') + ' from live';
     document.getElementById('subline').textContent =
       status.done + ' of ' + status.total + ' done';
     document.getElementById('meter').style.width =
       Math.round((status.done / status.total) * 100) + '%';
     const steps = document.getElementById('steps');
+    steps.replaceChildren();
     for (const step of status.steps) {
       const row = document.createElement('div');
       row.className = 'row';
@@ -88,6 +115,14 @@ export const SETUP_STATUS_HTML = `<!doctype html>
       steps.append(row);
     }
   }
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== '2.0') return;
+    if (message.method !== 'ui/notifications/tool-result') return;
+    renderStatus(message.params && message.params.structuredContent);
+  }, { passive: true });
+  renderStatus(window.openai && window.openai.toolOutput);
 </script>
 </body></html>`
 
@@ -107,16 +142,25 @@ export const UPGRADE_CARD_HTML = `<!doctype html>
   <div class="muted" style="margin-top:8px">Everything already built keeps working on the current plan.</div>
 </div>
 <script>
-  const data = window.openai && window.openai.toolOutput;
-  const limit = data && data.planLimit ? data.planLimit : null;
-  // toolOutput is model-influenced data landing in an href — only ever
-  // accept an https URL, never javascript: or anything else.
-  if (limit && typeof limit.upgradeUrl === 'string' && /^https:\\/\\//.test(limit.upgradeUrl)) {
-    document.getElementById('root').hidden = false;
-    document.getElementById('headline').textContent =
-      'The current plan\\u2019s ' + (limit.feature || 'allowance') + ' is used up';
-    document.getElementById('subline').textContent = limit.detail || '';
-    document.getElementById('cta').href = limit.upgradeUrl;
+  function renderPlanLimit(data) {
+    const limit = data && data.planLimit ? data.planLimit : null;
+    // Tool output is model-influenced data landing in an href. Only accept an
+    // https URL, never javascript: or anything else.
+    if (limit && typeof limit.upgradeUrl === 'string' && /^https:\\/\\//.test(limit.upgradeUrl)) {
+      document.getElementById('root').hidden = false;
+      document.getElementById('headline').textContent =
+        'The current plan\\u2019s ' + (limit.feature || 'allowance') + ' is used up';
+      document.getElementById('subline').textContent = limit.detail || '';
+      document.getElementById('cta').href = limit.upgradeUrl;
+    }
   }
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== '2.0') return;
+    if (message.method !== 'ui/notifications/tool-result') return;
+    renderPlanLimit(message.params && message.params.structuredContent);
+  }, { passive: true });
+  renderPlanLimit(window.openai && window.openai.toolOutput);
 </script>
 </body></html>`
