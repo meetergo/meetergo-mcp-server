@@ -116,6 +116,15 @@ const WEBHOOK_EVENTS = [
   'signature_completed',
 ] as const
 
+/** A contact's part on a deal, beyond the single primary contactId. */
+const DEAL_CONTACT_ROLES = [
+  'primary',
+  'decision_maker',
+  'influencer',
+  'user',
+  'other',
+] as const
+
 /** Current channels. The enum also carries deprecated Skype/Teams v1 values. */
 const MEETING_CHANNELS = [
   'local',
@@ -1197,6 +1206,198 @@ export const TOOLS: ToolDefinition[] = [
     destructive: true,
     run: (client, { contactId }) =>
       client.request('DELETE', `/crm/${contactId}`, { root: true }),
+  },
+
+  // ---- Deals ----------------------------------------------------------------
+  {
+    name: 'list_pipelines',
+    title: 'List pipelines',
+    description:
+      'List sales pipelines and their stages, each with an id, order, colour and whether it counts as won or lost. A valid stageId from here is required to create or move a deal.',
+    schema: {},
+    readOnly: true,
+    run: (client) => client.request('GET', '/crm/pipelines', { root: true }),
+  },
+  {
+    name: 'list_deals',
+    title: 'List deals',
+    description:
+      'Search and filter deals by pipeline, stage, contact, company, owner or a name match. isOpen, isWon and isLost filter by outcome; paginated with page and limit.',
+    schema: {
+      search: z.string().optional().describe('Matches the deal name'),
+      pipelineId: z.string().optional(),
+      stageId: z.string().optional(),
+      ownerId: z.string().optional(),
+      contactId: z.string().optional(),
+      crmCompanyId: z.string().optional(),
+      isOpen: z.boolean().optional(),
+      isWon: z.boolean().optional(),
+      isLost: z.boolean().optional(),
+      page: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).optional(),
+      sortBy: z.string().optional(),
+      sortOrder: z.enum(['ASC', 'DESC']).optional(),
+    },
+    readOnly: true,
+    run: (client, args) =>
+      client.request('GET', '/crm/deals', { query: args, root: true }),
+  },
+  {
+    name: 'get_deal',
+    title: 'Get a deal',
+    description:
+      'Return a full deal record, including its linked contact, company, stage and owner.',
+    schema: { dealId: z.string() },
+    readOnly: true,
+    run: (client, { dealId }) =>
+      client.request('GET', `/crm/deals/${dealId}`, { root: true }),
+  },
+  {
+    name: 'create_deal',
+    title: 'Create a deal',
+    description:
+      'Create a deal in a pipeline. Requires a name, pipelineId and a stageId that belongs to that pipeline — read the pipelines first to find valid ids. Optionally links a contact, a company and an owner.',
+    schema: {
+      name: z.string().max(255),
+      pipelineId: z.string(),
+      stageId: z.string().describe('Must belong to pipelineId'),
+      value: z.number().optional(),
+      currency: z.string().max(10).optional().describe('e.g. EUR, USD'),
+      expectedCloseDate: z.string().optional().describe('ISO 8601 date'),
+      notes: z.string().max(10000).optional(),
+      crmCompanyId: z.string().optional(),
+      contactId: z.string().optional(),
+      ownerId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          'Account owner. Omit to default to the creating user; pass null to create the deal with no owner at all.',
+        ),
+      contacts: z
+        .array(
+          z.object({
+            contactId: z.string(),
+            role: z.enum(DEAL_CONTACT_ROLES).optional(),
+            isPrimary: z.boolean().optional(),
+          }),
+        )
+        .optional()
+        .describe('Contacts on the deal beyond contactId, each with a role'),
+      customFields: z.record(z.unknown()).optional(),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/deals', { body, root: true }),
+  },
+  {
+    name: 'update_deal',
+    title: 'Update a deal',
+    description:
+      'Change a deal. Only supplied fields change. Passing null for contactId, crmCompanyId, expectedCloseDate or ownerId clears that field. Move the deal to another stage in its own pipeline with stageId.',
+    schema: {
+      dealId: z.string(),
+      name: z.string().max(255).optional(),
+      value: z.number().optional(),
+      currency: z.string().max(10).optional(),
+      expectedCloseDate: z.string().nullable().optional(),
+      notes: z.string().max(10000).optional(),
+      crmCompanyId: z.string().nullable().optional(),
+      contactId: z.string().nullable().optional(),
+      stageId: z.string().optional(),
+      ownerId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('null clears the account owner, leaving the deal unassigned'),
+      customFields: z.record(z.unknown()).optional(),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}`, { body, root: true }),
+  },
+  {
+    name: 'delete_deal',
+    title: 'Delete a deal',
+    description:
+      'Permanently delete a deal. Its activity history and stage changes are gone with it.',
+    schema: { dealId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { dealId }) =>
+      client.request('DELETE', `/crm/deals/${dealId}`, { root: true }),
+  },
+  {
+    name: 'mark_deal_won',
+    title: 'Mark a deal as won',
+    description:
+      "Close a deal as won and move it to a won-flagged stage in its pipeline. Pass wonStageId to pick a specific one when the pipeline has more than one; omit it to use the pipeline's default.",
+    schema: {
+      dealId: z.string(),
+      wonStageId: z
+        .string()
+        .optional()
+        .describe('A stage in the deal’s own pipeline with isWon set'),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/won`, { body, root: true }),
+  },
+  {
+    name: 'mark_deal_lost',
+    title: 'Mark a deal as lost',
+    description:
+      'Close a deal as lost. lostReason is a free-form key rather than a fixed list, since each company configures its own reasons; whether one is required is a per-company setting.',
+    schema: {
+      dealId: z.string(),
+      lostReason: z.string().max(64).optional(),
+      lostReasonNote: z.string().max(1000).optional(),
+      lostStageId: z
+        .string()
+        .optional()
+        .describe('A stage in the deal’s own pipeline with isLost set'),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/lost`, { body, root: true }),
+  },
+  {
+    name: 'reopen_deal',
+    title: 'Reopen a deal',
+    description:
+      'Reopen a deal previously closed as won or lost, clearing that outcome. Pass stageId to land it on a specific stage in its pipeline; omit it to use the default for reopened deals.',
+    schema: {
+      dealId: z.string(),
+      stageId: z.string().optional(),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/reopen`, {
+        body,
+        root: true,
+      }),
+  },
+  {
+    name: 'get_deal_activity',
+    title: "Get a deal's activity log",
+    description:
+      'Return the stage-change and field-update history for a deal, most recent first. Read-only: entries are written by the API itself, not by a tool call.',
+    schema: {
+      dealId: z.string(),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('Max entries. Defaults to 50.'),
+    },
+    readOnly: true,
+    run: (client, { dealId, limit }) =>
+      client.request('GET', `/crm/deals/${dealId}/activity`, {
+        query: { limit: limit ?? 50 },
+        root: true,
+      }),
   },
 
   // ---- Webhooks -----------------------------------------------------------

@@ -452,6 +452,126 @@
         "destructive_justification": "Permanently removes the contact record."
       }
     },
+    "list_pipelines": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads sales pipelines and their stages.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Read-only; nothing is changed or removed."
+      }
+    },
+    "list_deals": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches and filters CRM deals.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Read-only; nothing is changed or removed."
+      }
+    },
+    "get_deal": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a single deal record.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Read-only; nothing is changed or removed."
+      }
+    },
+    "create_deal": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a CRM deal in a pipeline.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Does not delete data, revoke access, or perform irreversible actions."
+      }
+    },
+    "update_deal": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Updates fields on an existing deal, such as its stage, value or owner.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Only the fields supplied change; nothing is deleted."
+      }
+    },
+    "delete_deal": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes a CRM deal.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Permanently removes the deal and its activity history."
+      }
+    },
+    "mark_deal_won": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Closes a deal as won.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "A status change that reopen_deal can undo; nothing is deleted."
+      }
+    },
+    "mark_deal_lost": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Closes a deal as lost.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "A status change that reopen_deal can undo; nothing is deleted."
+      }
+    },
+    "reopen_deal": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reopens a deal previously closed as won or lost.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "A status change; nothing is deleted."
+      }
+    },
+    "get_deal_activity": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a deal's stage-change and update history.",
+        "open_world_justification": "Operates only on this account's own private data in meetergo.",
+        "destructive_justification": "Read-only; nothing is changed or removed."
+      }
+    },
     "list_webhooks": {
       "annotations": {
         "readOnlyHint": true,
