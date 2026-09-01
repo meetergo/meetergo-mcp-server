@@ -203,7 +203,7 @@ server itself is never gated — a token from any plan, including Free, works.
 
 ## Tools
 
-67 tools, covering scheduling end to end. **Scheduling** is the loop most agents
+76 tools, covering scheduling end to end. **Scheduling** is the loop most agents
 live in; the rest is there so an agent never has to fall back to raw REST.
 
 ### Scheduling
@@ -286,6 +286,20 @@ live in; the rest is there so an agent never has to fall back to raw REST.
 | `mark_deal_lost` | **yes** | Close as lost, with an optional reason |
 | `reopen_deal` | **yes** | Undo a won or lost outcome |
 | `get_deal_activity` | | Stage-change and update history, most recent first |
+
+### Companies
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `list_companies` | | Search and filter by name, industry, size or owner |
+| `get_company` | | Full record, including owner and deal/contact counts |
+| `create_company` | **yes** | Add a company. Only `name` is required |
+| `update_company` | **yes** | Edit a company; pass `ownerId: null` to unassign it |
+| `delete_company` | **destructive** | Remove a company (linked contacts and deals keep existing, just unlinked) |
+| `get_company_by_domain` | | Look up a company by its website domain, e.g. before creating a duplicate |
+| `get_company_contacts` | | Contacts linked to a company |
+| `get_company_deals` | | Deals linked to a company, across every pipeline |
+| `get_company_summary` | | Company counts and pipeline value, grouped by industry and size |
 
 ### Mira, the website assistant
 

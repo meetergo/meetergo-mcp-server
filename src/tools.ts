@@ -125,6 +125,8 @@ const DEAL_CONTACT_ROLES = [
   'other',
 ] as const
 
+const COMPANY_SIZES = ['1-10', '11-50', '51-200', '201-500', '501-1000', '1001+'] as const
+
 /** Current channels. The enum also carries deprecated Skype/Teams v1 values. */
 const MEETING_CHANNELS = [
   'local',
@@ -1398,6 +1400,141 @@ export const TOOLS: ToolDefinition[] = [
         query: { limit: limit ?? 50 },
         root: true,
       }),
+  },
+
+  // ---- Companies ------------------------------------------------------------
+  {
+    name: 'list_companies',
+    title: 'List companies',
+    description:
+      'Search and filter CRM companies by name, industry, size or owner; paginated with page and limit.',
+    schema: {
+      search: z.string().optional().describe('Matches the company name'),
+      industry: z.string().optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      ownerId: z.string().optional(),
+      page: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).optional(),
+      sortBy: z.string().optional(),
+      sortOrder: z.enum(['ASC', 'DESC']).optional(),
+    },
+    readOnly: true,
+    run: (client, args) =>
+      client.request('GET', '/crm/companies', { query: args, root: true }),
+  },
+  {
+    name: 'get_company',
+    title: 'Get a company',
+    description: 'Return a full CRM company record, including its owner and deal/contact counts.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}`, { root: true }),
+  },
+  {
+    name: 'create_company',
+    title: 'Create a company',
+    description:
+      'Create a CRM company. Only name is required; link it to contacts and deals afterwards via their crmCompanyId.',
+    schema: {
+      name: z.string().max(255),
+      domain: z.string().max(255).optional(),
+      industry: z.string().max(100).optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      website: z.string().max(500).optional(),
+      phoneNumber: z.string().max(50).optional(),
+      addressLine1: z.string().max(255).optional(),
+      addressLine2: z.string().max(255).optional(),
+      addressCity: z.string().max(100).optional(),
+      addressZip: z.string().max(20).optional(),
+      addressCountry: z.string().max(100).optional(),
+      notes: z.string().max(10000).optional(),
+      ownerId: z.string().optional(),
+      customFields: z
+        .record(z.unknown())
+        .optional()
+        .describe('Keyed by field key from list_data_fields'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/companies', { body, root: true }),
+  },
+  {
+    name: 'update_company',
+    title: 'Update a company',
+    description:
+      'Update an existing company. All fields optional; only supplied fields change. Pass ownerId: null to remove the owner. customFields is a patch: a key sent as null is removed, keys left out are untouched.',
+    schema: {
+      crmCompanyId: z.string(),
+      name: z.string().max(255).optional(),
+      domain: z.string().max(255).optional(),
+      industry: z.string().max(100).optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      website: z.string().max(500).optional(),
+      phoneNumber: z.string().max(50).optional(),
+      addressLine1: z.string().max(255).optional(),
+      addressLine2: z.string().max(255).optional(),
+      addressCity: z.string().max(100).optional(),
+      addressZip: z.string().max(20).optional(),
+      addressCountry: z.string().max(100).optional(),
+      notes: z.string().max(10000).optional(),
+      ownerId: z.string().nullable().optional(),
+      customFields: z
+        .record(z.unknown().nullable())
+        .optional()
+        .describe('Keyed by field key from list_data_fields; null removes a key'),
+    },
+    readOnly: false,
+    run: (client, { crmCompanyId, ...body }) =>
+      client.request('PATCH', `/crm/companies/${crmCompanyId}`, { body, root: true }),
+  },
+  {
+    name: 'delete_company',
+    title: 'Delete a company',
+    description:
+      'Permanently delete a CRM company. Contacts and deals that referenced it keep existing but lose the link.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('DELETE', `/crm/companies/${crmCompanyId}`, { root: true }),
+  },
+  {
+    name: 'get_company_by_domain',
+    title: 'Find a company by domain',
+    description: 'Look up a CRM company by its website domain, e.g. for de-duplication before creating a new one.',
+    schema: { domain: z.string() },
+    readOnly: true,
+    run: (client, { domain }) =>
+      client.request('GET', `/crm/companies/by-domain/${domain}`, { root: true }),
+  },
+  {
+    name: 'get_company_contacts',
+    title: "Get a company's contacts",
+    description: 'List the CRM contacts linked to a company.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}/contacts`, { root: true }),
+  },
+  {
+    name: 'get_company_deals',
+    title: "Get a company's deals",
+    description: 'List the deals linked to a company, across every pipeline.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}/deals`, { root: true }),
+  },
+  {
+    name: 'get_company_summary',
+    title: 'Get company summary',
+    description:
+      'Aggregate CRM company counts and pipeline value, grouped by industry and by size band. Optionally scoped to one owner.',
+    schema: { ownerId: z.string().optional() },
+    readOnly: true,
+    run: (client, args) =>
+      client.request('GET', '/crm/companies/summary', { query: args, root: true }),
   },
 
   // ---- Webhooks -----------------------------------------------------------

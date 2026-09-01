@@ -8,7 +8,7 @@ import { TOOLS, sanitizeMiraSettingsForPatch } from '../tools.js'
  */
 describe('meetergo MCP tool surface', () => {
   it('covers the API surface an agent needs, with no duplicate names', () => {
-    expect(TOOLS).toHaveLength(67)
+    expect(TOOLS).toHaveLength(76)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
   })
 
@@ -56,6 +56,7 @@ describe('meetergo MCP tool surface', () => {
       'bulk_create_contacts',
       'cancel_appointment',
       'crawl_company_website',
+      'create_company',
       'create_contact',
       'create_data_field',
       'create_deal',
@@ -64,6 +65,7 @@ describe('meetergo MCP tool surface', () => {
       'create_qualification_form',
       'create_routing_form',
       'create_webhook',
+      'delete_company',
       'delete_contact',
       'delete_deal',
       'delete_knowledge_document',
@@ -83,6 +85,7 @@ describe('meetergo MCP tool surface', () => {
       'send_quick_email',
       'send_routing_form',
       'update_appointment_notes',
+      'update_company',
       'update_contact',
       'update_deal',
       'update_meeting_transcription',
@@ -105,6 +108,7 @@ describe('meetergo MCP tool surface', () => {
       'answer_visitor_question',
       'book_appointment',
       'cancel_appointment',
+      'delete_company',
       'delete_contact',
       'delete_deal',
       'delete_knowledge_document',
@@ -242,6 +246,7 @@ describe('meetergo MCP tool surface', () => {
       'attendeeId',
       'documentId',
       'dealId',
+      'crmCompanyId',
     ]
     // Company-scoped singletons: there is exactly one target (the caller's own
     // page / the company's Mira config / its knowledge base), so no id exists.
@@ -560,6 +565,50 @@ describe('wire format', () => {
     const call = await callTool('get_deal_activity', { dealId: 'd-1' })
     expect(call.path).toBe('/crm/deals/d-1/activity')
     expect(call.options.query).toMatchObject({ limit: 50 })
+  })
+
+  it('routes company tools to the host root, like the rest of the CRM', async () => {
+    for (const [name, args] of [
+      ['list_companies', {}],
+      ['get_company', { crmCompanyId: 'co-1' }],
+      ['create_company', { name: 'Muster GmbH' }],
+      ['update_company', { crmCompanyId: 'co-1', industry: 'Einzelhandel' }],
+      ['delete_company', { crmCompanyId: 'co-1' }],
+      ['get_company_by_domain', { domain: 'muster.example' }],
+      ['get_company_contacts', { crmCompanyId: 'co-1' }],
+      ['get_company_deals', { crmCompanyId: 'co-1' }],
+      ['get_company_summary', {}],
+    ] as const) {
+      const call = await callTool(name, args)
+      expect(call.options.root, `${name} must target the host root`).toBe(true)
+    }
+  })
+
+  it('creates a company with only the fields the caller supplied', async () => {
+    // CreateCrmCompanyDto requires only `name`.
+    const call = await callTool('create_company', { name: 'Muster GmbH' })
+    expect(call).toMatchObject({ method: 'POST', path: '/crm/companies' })
+    expect(call.options.body).toMatchObject({ name: 'Muster GmbH' })
+  })
+
+  it('lets update_company clear ownerId with an explicit null, not just omit it', async () => {
+    const call = await callTool('update_company', { crmCompanyId: 'co-1', ownerId: null })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/crm/companies/co-1' })
+    expect(call.options.body).toMatchObject({ ownerId: null })
+    expect(call.options.body).not.toHaveProperty('name')
+  })
+
+  it('looks up a company by domain on its own path, not a query filter', async () => {
+    const call = await callTool('get_company_by_domain', { domain: 'muster.example' })
+    expect(call).toMatchObject({ method: 'GET', path: '/crm/companies/by-domain/muster.example' })
+  })
+
+  it('reads a company\'s linked contacts and deals on their nested paths', async () => {
+    const contacts = await callTool('get_company_contacts', { crmCompanyId: 'co-1' })
+    expect(contacts.path).toBe('/crm/companies/co-1/contacts')
+
+    const deals = await callTool('get_company_deals', { crmCompanyId: 'co-1' })
+    expect(deals.path).toBe('/crm/companies/co-1/deals')
   })
 
   it('keeps scheduling tools on the versioned base', async () => {

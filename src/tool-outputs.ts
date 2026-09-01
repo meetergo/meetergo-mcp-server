@@ -179,6 +179,30 @@ const deal = out(
   'A CRM deal',
 )
 
+const company = out(
+  {
+    id: str.describe('The crmCompanyId other tools take'),
+    name: str,
+    domain: str,
+    industry: str,
+    size: str.describe('1-10, 11-50, 51-200, 201-500, 501-1000 or 1001+'),
+    website: str,
+    phoneNumber: str,
+    address: record.nullable().optional(),
+    notes: str,
+    ownerId: str,
+    companyId: str.describe('The meetergo tenant id owning this record, not the CRM company itself'),
+    customFields: record.nullable().optional(),
+    owner: record.nullable().optional(),
+    contactsCount: num,
+    dealsCount: num,
+    totalDealsValue: num,
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM company',
+)
+
 const dealActivity = out(
   {
     id: str,
@@ -538,6 +562,34 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
   mark_deal_lost: deal,
   reopen_deal: deal,
   get_deal_activity: listOf(dealActivity, "A deal's activity log, most recent first"),
+  list_companies: out(
+    {
+      result: list(company),
+      companies: list(company),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated CRM companies',
+  ),
+  get_company: company,
+  create_company: company,
+  update_company: company,
+  delete_company: ok,
+  get_company_by_domain: company,
+  get_company_contacts: listOf(contact, 'Contacts linked to the company'),
+  get_company_deals: listOf(deal, 'Deals linked to the company'),
+  get_company_summary: out(
+    {
+      totalCompanies: num,
+      totalDealsValue: num,
+      companiesWithDeals: num,
+      byIndustry: list(record).describe('Company counts grouped by industry'),
+      bySize: list(record).describe('Company counts grouped by size band'),
+    },
+    'Company counts and pipeline value, grouped by industry and size',
+  ),
   list_webhooks: listOf(webhook, 'Webhook subscriptions of the company'),
   create_webhook: webhook,
   update_webhook: webhook,
