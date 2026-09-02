@@ -752,7 +752,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_contact',
     title: 'Create a contact',
     description:
-      'Create a CRM contact. Either email or phoneNumber is required. Existing contacts are not deduplicated.',
+      'Create a CRM contact. Either email or phoneNumber is required. Existing contacts are not deduplicated. Pass crmCompanyId to link the contact to an existing CRM company.',
     schema: {
       firstName: z.string().optional(),
       lastName: z.string().optional(),
@@ -761,6 +761,7 @@ export const TOOLS: ToolDefinition[] = [
       tags: z.array(z.string()).optional().describe('e.g. ["Lead", "Enterprise"]'),
       notes: z.string().optional().describe('Internal notes, not visible to the contact'),
       accountOwnerId: z.string().optional(),
+      crmCompanyId: z.string().optional(),
     },
     readOnly: false,
     run: async (client, args) => {
@@ -777,7 +778,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_contact',
     title: 'Update a contact',
     description:
-      'Update a CRM contact. Only supplied fields change. Tags replace the existing list rather than merging, so retained tags must be included.',
+      'Update a CRM contact. Only supplied fields change. Tags replace the existing list rather than merging, so retained tags must be included. Pass crmCompanyId to link to a company, or null to remove the link.',
     schema: {
       contactId: z.string(),
       firstName: z.string().optional(),
@@ -787,6 +788,7 @@ export const TOOLS: ToolDefinition[] = [
       tags: z.array(z.string()).optional(),
       notes: z.string().optional(),
       accountOwnerId: z.string().optional(),
+      crmCompanyId: z.string().nullable().optional(),
     },
     readOnly: false,
     // Tags replace rather than merge — a careless call silently drops data.

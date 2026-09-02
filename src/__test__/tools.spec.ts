@@ -539,6 +539,24 @@ describe('wire format', () => {
     expect(call.options.body).not.toHaveProperty('name')
   })
 
+  it('lets update_contact clear crmCompanyId with an explicit null, not just omit it', async () => {
+    // UpdateContactDto: `null` clears the linked company; omitting the key
+    // leaves it unchanged.
+    const call = await callTool('update_contact', { contactId: 'c-1', crmCompanyId: null })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/crm/c-1' })
+    expect(call.options.body).toMatchObject({ crmCompanyId: null })
+    expect(call.options.body).not.toHaveProperty('notes')
+  })
+
+  it('lets create_contact link a crmCompanyId', async () => {
+    const call = await callTool('create_contact', {
+      email: 'a@example.com',
+      crmCompanyId: 'co-1',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/crm' })
+    expect(call.options.body).toMatchObject({ crmCompanyId: 'co-1' })
+  })
+
   it('sends the won/lost/reopen bodies their own DTOs expect', async () => {
     const won = await callTool('mark_deal_won', { dealId: 'd-1', wonStageId: 's-won' })
     expect(won.path).toBe('/crm/deals/d-1/won')
