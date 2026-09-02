@@ -118,6 +118,108 @@ const contact = out(
   'A CRM contact',
 )
 
+const pipelineStage = out(
+  {
+    id: str,
+    name: str,
+    color: str,
+    order: num,
+    isWon: bool,
+    isLost: bool,
+    winProbability: num,
+    rottingDays: num,
+    requiredCustomFields: list(z.string()),
+    pipelineId: str,
+  },
+  'A stage within a pipeline',
+)
+
+const pipeline = out(
+  {
+    id: str.describe('The pipelineId other tools take'),
+    name: str,
+    isDefault: bool,
+    companyId: str,
+    stages: list(pipelineStage),
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A sales pipeline with its stages',
+)
+
+const deal = out(
+  {
+    id: str.describe('The dealId other tools take'),
+    name: str,
+    value: num,
+    currency: str,
+    expectedCloseDate: str,
+    notes: str,
+    crmCompanyId: str,
+    contactId: str,
+    pipelineId: str,
+    stageId: str,
+    ownerId: str,
+    companyId: str,
+    lostReason: str,
+    lostReasonNote: str,
+    wonAt: str,
+    lostAt: str,
+    enteredStageAt: str,
+    isRotting: bool,
+    customFields: record.nullable().optional(),
+    crmCompany: record.nullable().optional(),
+    contact: record.nullable().optional(),
+    stage: record.nullable().optional(),
+    owner: record.nullable().optional(),
+    contacts: list(record),
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM deal',
+)
+
+const company = out(
+  {
+    id: str.describe('The crmCompanyId other tools take'),
+    name: str,
+    domain: str,
+    industry: str,
+    size: str.describe('1-10, 11-50, 51-200, 201-500, 501-1000 or 1001+'),
+    website: str,
+    phoneNumber: str,
+    address: record.nullable().optional(),
+    notes: str,
+    ownerId: str,
+    companyId: str.describe('The meetergo tenant id owning this record, not the CRM company itself'),
+    customFields: record.nullable().optional(),
+    owner: record.nullable().optional(),
+    contactsCount: num,
+    dealsCount: num,
+    totalDealsValue: num,
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM company',
+)
+
+const dealActivity = out(
+  {
+    id: str,
+    dealId: str,
+    activityType: str,
+    fromStageId: str,
+    fromStageName: str,
+    toStageId: str,
+    toStageName: str,
+    changedById: str.describe('Null when automation changed a deal with no owner'),
+    changedByName: str,
+    metadata: record.nullable().optional(),
+    changedAt: str,
+  },
+  'One deal activity or stage-change event',
+)
+
 const routingForm = out(
   {
     id: str.describe('The formId other tools take'),
@@ -441,6 +543,53 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
     'Result of the bulk import',
   ),
   delete_contact: ok,
+  list_pipelines: listOf(pipeline, 'Sales pipelines and their stages'),
+  list_deals: out(
+    {
+      deals: list(deal),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated deals',
+  ),
+  get_deal: deal,
+  create_deal: deal,
+  update_deal: deal,
+  delete_deal: ok,
+  mark_deal_won: deal,
+  mark_deal_lost: deal,
+  reopen_deal: deal,
+  get_deal_activity: listOf(dealActivity, "A deal's activity log, most recent first"),
+  list_companies: out(
+    {
+      result: list(company),
+      companies: list(company),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated CRM companies',
+  ),
+  get_company: company,
+  create_company: company,
+  update_company: company,
+  delete_company: ok,
+  get_company_by_domain: company,
+  get_company_contacts: listOf(contact, 'Contacts linked to the company'),
+  get_company_deals: listOf(deal, 'Deals linked to the company'),
+  get_company_summary: out(
+    {
+      totalCompanies: num,
+      totalDealsValue: num,
+      companiesWithDeals: num,
+      byIndustry: list(record).describe('Company counts grouped by industry'),
+      bySize: list(record).describe('Company counts grouped by size band'),
+    },
+    'Company counts and pipeline value, grouped by industry and size',
+  ),
   list_webhooks: listOf(webhook, 'Webhook subscriptions of the company'),
   create_webhook: webhook,
   update_webhook: webhook,

@@ -203,7 +203,7 @@ server itself is never gated — a token from any plan, including Free, works.
 
 ## Tools
 
-57 tools, covering scheduling end to end. **Scheduling** is the loop most agents
+76 tools, covering scheduling end to end. **Scheduling** is the loop most agents
 live in; the rest is there so an agent never has to fall back to raw REST.
 
 ### Scheduling
@@ -271,6 +271,35 @@ live in; the rest is there so an agent never has to fall back to raw REST.
 | `update_contact` | **yes** | Edit a contact |
 | `bulk_create_contacts` | **yes** | Import many at once (3 calls per min) |
 | `delete_contact` | **destructive** | Remove a contact and its form answers |
+
+### Deals
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `list_pipelines` | | Pipelines and their stages — read this before creating or moving a deal |
+| `list_deals` | | Search and filter by pipeline, stage, contact, company, owner or outcome |
+| `get_deal` | | Full record, including linked contact, company, stage and owner |
+| `create_deal` | **yes** | Add a deal to a pipeline |
+| `update_deal` | **yes** | Change value, stage, owner, contact or company |
+| `delete_deal` | **destructive** | Remove a deal and its activity history |
+| `mark_deal_won` | **yes** | Close as won |
+| `mark_deal_lost` | **yes** | Close as lost, with an optional reason |
+| `reopen_deal` | **yes** | Undo a won or lost outcome |
+| `get_deal_activity` | | Stage-change and update history, most recent first |
+
+### Companies
+
+| Tool | Writes? | Purpose |
+|---|---|---|
+| `list_companies` | | Search and filter by name, industry, size or owner |
+| `get_company` | | Full record, including owner and deal/contact counts |
+| `create_company` | **yes** | Add a company. Only `name` is required |
+| `update_company` | **yes** | Edit a company; pass `ownerId: null` to unassign it |
+| `delete_company` | **destructive** | Remove a company (linked contacts and deals keep existing, just unlinked) |
+| `get_company_by_domain` | | Look up a company by its website domain, e.g. before creating a duplicate |
+| `get_company_contacts` | | Contacts linked to a company |
+| `get_company_deals` | | Deals linked to a company, across every pipeline |
+| `get_company_summary` | | Company counts and pipeline value, grouped by industry and size |
 
 ### Mira, the website assistant
 
