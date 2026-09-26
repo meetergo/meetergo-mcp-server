@@ -8,7 +8,7 @@ import { TOOLS, sanitizeMiraSettingsForPatch } from '../tools.js'
  */
 describe('meetergo MCP tool surface', () => {
   it('covers the API surface an agent needs, with no duplicate names', () => {
-    expect(TOOLS).toHaveLength(57)
+    expect(TOOLS).toHaveLength(79)
     expect(new Set(TOOLS.map((t) => t.name)).size).toBe(TOOLS.length)
   })
 
@@ -56,19 +56,28 @@ describe('meetergo MCP tool surface', () => {
       'bulk_create_contacts',
       'cancel_appointment',
       'crawl_company_website',
+      'create_communication',
+      'create_company',
       'create_contact',
       'create_data_field',
+      'create_deal',
       'create_meeting_type',
       'create_one_time_booking_link',
       'create_qualification_form',
       'create_routing_form',
       'create_webhook',
+      'delete_communication',
+      'delete_company',
       'delete_contact',
+      'delete_deal',
       'delete_knowledge_document',
       'delete_meeting_type',
       'delete_routing_form',
       'delete_webhook',
       'import_booking_page',
+      'mark_deal_lost',
+      'mark_deal_won',
+      'reopen_deal',
       'reschedule_appointment',
       'restore_mira_settings',
       // Not a data mutation an operator would name, but it persists the
@@ -78,7 +87,9 @@ describe('meetergo MCP tool surface', () => {
       'send_quick_email',
       'send_routing_form',
       'update_appointment_notes',
+      'update_company',
       'update_contact',
+      'update_deal',
       'update_meeting_transcription',
       'update_meeting_type',
       'update_mira_settings',
@@ -99,7 +110,10 @@ describe('meetergo MCP tool surface', () => {
       'answer_visitor_question',
       'book_appointment',
       'cancel_appointment',
+      'delete_communication',
+      'delete_company',
       'delete_contact',
+      'delete_deal',
       'delete_knowledge_document',
       'delete_meeting_type',
       'delete_routing_form',
@@ -234,6 +248,9 @@ describe('meetergo MCP tool surface', () => {
       'webhookId',
       'attendeeId',
       'documentId',
+      'dealId',
+      'crmCompanyId',
+      'communicationId',
     ]
     // Company-scoped singletons: there is exactly one target (the caller's own
     // page / the company's Mira config / its knowledge base), so no id exists.
@@ -476,6 +493,236 @@ describe('wire format', () => {
       const call = await callTool(name, args)
       expect(call.options.root, `${name} must target the host root`).toBe(true)
     }
+  })
+
+  it('routes deal and pipeline tools to the host root, like the rest of the CRM', async () => {
+    for (const [name, args] of [
+      ['list_pipelines', {}],
+      ['list_deals', {}],
+      ['get_deal', { dealId: 'd-1' }],
+      ['create_deal', { name: 'Muster GmbH', pipelineId: 'p-1', stageId: 's-1' }],
+      ['update_deal', { dealId: 'd-1', stageId: 's-2' }],
+      ['delete_deal', { dealId: 'd-1' }],
+      ['mark_deal_won', { dealId: 'd-1' }],
+      ['mark_deal_lost', { dealId: 'd-1' }],
+      ['reopen_deal', { dealId: 'd-1' }],
+      ['get_deal_activity', { dealId: 'd-1' }],
+    ] as const) {
+      const call = await callTool(name, args)
+      expect(call.options.root, `${name} must target the host root`).toBe(true)
+    }
+  })
+
+  it('creates a deal against the pipeline/stage the caller chose', async () => {
+    // CreateDealDto requires name, pipelineId and stageId; the API has no
+    // default pipeline for this call, unlike a bare deal-count query.
+    const call = await callTool('create_deal', {
+      name: 'Muster GmbH – Cybersicherheitsberatung',
+      pipelineId: 'p-1',
+      stageId: 's-1',
+      value: 990,
+      ownerId: 'u-1',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/crm/deals' })
+    expect(call.options.body).toMatchObject({
+      name: 'Muster GmbH – Cybersicherheitsberatung',
+      pipelineId: 'p-1',
+      stageId: 's-1',
+      value: 990,
+      ownerId: 'u-1',
+    })
+  })
+
+  it('lets update_deal clear ownerId with an explicit null, not just omit it', async () => {
+    // UpdateDealDto: `null` clears the owner; omitting the key leaves it
+    // unchanged. JSON.stringify only preserves that distinction if the tool
+    // never substitutes a default for a missing field.
+    const call = await callTool('update_deal', { dealId: 'd-1', ownerId: null })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/crm/deals/d-1' })
+    expect(call.options.body).toMatchObject({ ownerId: null })
+    expect(call.options.body).not.toHaveProperty('name')
+  })
+
+  it('lets update_contact clear crmCompanyId with an explicit null, not just omit it', async () => {
+    // UpdateContactDto: `null` clears the linked company; omitting the key
+    // leaves it unchanged.
+    const call = await callTool('update_contact', { contactId: 'c-1', crmCompanyId: null })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/crm/c-1' })
+    expect(call.options.body).toMatchObject({ crmCompanyId: null })
+    expect(call.options.body).not.toHaveProperty('notes')
+  })
+
+  it('lets create_contact link a crmCompanyId', async () => {
+    const call = await callTool('create_contact', {
+      email: 'a@example.com',
+      crmCompanyId: 'co-1',
+    })
+    expect(call).toMatchObject({ method: 'POST', path: '/crm' })
+    expect(call.options.body).toMatchObject({ crmCompanyId: 'co-1' })
+  })
+
+  it('sends the won/lost/reopen bodies their own DTOs expect', async () => {
+    const won = await callTool('mark_deal_won', { dealId: 'd-1', wonStageId: 's-won' })
+    expect(won.path).toBe('/crm/deals/d-1/won')
+    expect(won.options.body).toMatchObject({ wonStageId: 's-won' })
+
+    const lost = await callTool('mark_deal_lost', {
+      dealId: 'd-1',
+      lostReason: 'budget',
+      lostReasonNote: 'Postponed to next fiscal year',
+    })
+    expect(lost.path).toBe('/crm/deals/d-1/lost')
+    expect(lost.options.body).toMatchObject({
+      lostReason: 'budget',
+      lostReasonNote: 'Postponed to next fiscal year',
+    })
+
+    const reopened = await callTool('reopen_deal', { dealId: 'd-1', stageId: 's-1' })
+    expect(reopened.path).toBe('/crm/deals/d-1/reopen')
+    expect(reopened.options.body).toMatchObject({ stageId: 's-1' })
+  })
+
+  it('defaults the deal activity limit instead of sending an unbounded query', async () => {
+    // GET /crm/deals/{id}/activity declares `limit` a required query param.
+    const call = await callTool('get_deal_activity', { dealId: 'd-1' })
+    expect(call.path).toBe('/crm/deals/d-1/activity')
+    expect(call.options.query).toMatchObject({ limit: 50 })
+  })
+
+  it('routes company tools to the host root, like the rest of the CRM', async () => {
+    for (const [name, args] of [
+      ['list_companies', {}],
+      ['get_company', { crmCompanyId: 'co-1' }],
+      ['create_company', { name: 'Muster GmbH' }],
+      ['update_company', { crmCompanyId: 'co-1', industry: 'Einzelhandel' }],
+      ['delete_company', { crmCompanyId: 'co-1' }],
+      ['get_company_by_domain', { domain: 'muster.example' }],
+      ['get_company_contacts', { crmCompanyId: 'co-1' }],
+      ['get_company_deals', { crmCompanyId: 'co-1' }],
+      ['get_company_summary', {}],
+    ] as const) {
+      const call = await callTool(name, args)
+      expect(call.options.root, `${name} must target the host root`).toBe(true)
+    }
+  })
+
+  it('creates a company with only the fields the caller supplied', async () => {
+    // CreateCrmCompanyDto requires only `name`.
+    const call = await callTool('create_company', { name: 'Muster GmbH' })
+    expect(call).toMatchObject({ method: 'POST', path: '/crm/companies' })
+    expect(call.options.body).toMatchObject({ name: 'Muster GmbH' })
+  })
+
+  it('lets update_company clear ownerId with an explicit null, not just omit it', async () => {
+    const call = await callTool('update_company', { crmCompanyId: 'co-1', ownerId: null })
+    expect(call).toMatchObject({ method: 'PATCH', path: '/crm/companies/co-1' })
+    expect(call.options.body).toMatchObject({ ownerId: null })
+    expect(call.options.body).not.toHaveProperty('name')
+  })
+
+  it('looks up a company by domain on its own path, not a query filter', async () => {
+    const call = await callTool('get_company_by_domain', { domain: 'muster.example' })
+    expect(call).toMatchObject({ method: 'GET', path: '/crm/companies/by-domain/muster.example' })
+  })
+
+  it('reads a company\'s linked contacts and deals on their nested paths', async () => {
+    const contacts = await callTool('get_company_contacts', { crmCompanyId: 'co-1' })
+    expect(contacts.path).toBe('/crm/companies/co-1/contacts')
+
+    const deals = await callTool('get_company_deals', { crmCompanyId: 'co-1' })
+    expect(deals.path).toBe('/crm/companies/co-1/deals')
+  })
+
+  it('routes communication tools to the host root, on the deal-scoped path', async () => {
+    const list = await callTool('get_deal_communications', { dealId: 'd-1' })
+    expect(list).toMatchObject({ method: 'GET', path: '/crm/deals/d-1/communications' })
+    expect(list.options.root).toBe(true)
+
+    const created = await callTool('create_communication', {
+      dealId: 'd-1',
+      type: 'whatsapp',
+      direction: 'outbound',
+      body: 'Terminbuchungslink übermittelt.',
+      occurredAt: '2026-09-07T11:00:00.000Z',
+    })
+    expect(created).toMatchObject({ method: 'POST', path: '/crm/communications' })
+    expect(created.options.root).toBe(true)
+    expect(created.options.body).toMatchObject({
+      dealId: 'd-1',
+      type: 'whatsapp',
+      direction: 'outbound',
+      body: 'Terminbuchungslink übermittelt.',
+      occurredAt: '2026-09-07T11:00:00.000Z',
+    })
+
+    const deleted = await callTool('delete_communication', { communicationId: 'comm-1' })
+    expect(deleted).toMatchObject({ method: 'DELETE', path: '/crm/communications/comm-1' })
+    expect(deleted.options.root).toBe(true)
+  })
+
+  it('filters search_contacts to an exact, case-insensitive email match', async () => {
+    // A generic searchTerm substring-matches; email is for a caller who has a
+    // full address and wants exactly that contact, not near-misses.
+    const tool = TOOLS.find((t) => t.name === 'search_contacts')!
+    const { client, calls } = record({
+      '/crm': {
+        items: [
+          { id: 'c-1', email: 'Info@Example.com' },
+          { id: 'c-2', email: 'info@example.com.br' },
+        ],
+      },
+    })
+    const result = await tool.run(client, { email: 'info@example.com' })
+    expect(calls[0].options.query).toMatchObject({ searchTerm: 'info@example.com' })
+    expect(calls[0].options.query).not.toHaveProperty('email')
+    expect(result).toMatchObject({ items: [{ id: 'c-1' }] })
+  })
+
+  it('leaves search_contacts on plain searchTerm when no email filter is given', async () => {
+    const call = await callTool('search_contacts', { searchTerm: 'Ada' })
+    expect(call.options.query).toMatchObject({ searchTerm: 'Ada' })
+    expect(call.options.query).not.toHaveProperty('email')
+  })
+
+  it('strips embedded deal objects from list_deals by default', async () => {
+    // crmCompany/contact/stage/owner/contacts roughly double the payload size
+    // on a workspace with real records; stripped unless asked for.
+    const tool = TOOLS.find((t) => t.name === 'list_deals')!
+    const rawDeal = {
+      id: 'd-1',
+      name: 'Muster GmbH',
+      crmCompany: { id: 'co-1' },
+      contact: { id: 'c-1' },
+      stage: { id: 's-1' },
+      owner: { id: 'u-1' },
+      contacts: [{ contactId: 'c-1' }],
+    }
+    const { client } = record({ '/crm/deals': { deals: [rawDeal], total: 1 } })
+    const result = (await tool.run(client, {})) as { deals: Record<string, unknown>[] }
+    expect(result.deals[0]).toMatchObject({ id: 'd-1', name: 'Muster GmbH' })
+    for (const field of ['crmCompany', 'contact', 'stage', 'owner', 'contacts']) {
+      expect(result.deals[0]).not.toHaveProperty(field)
+    }
+  })
+
+  it('restores only the requested embedded objects on list_deals via expand', async () => {
+    const tool = TOOLS.find((t) => t.name === 'list_deals')!
+    const rawDeal = {
+      id: 'd-1',
+      crmCompany: { id: 'co-1' },
+      contact: { id: 'c-1' },
+    }
+    const { client } = record({ '/crm/deals': { deals: [rawDeal], total: 1 } })
+    const result = (await tool.run(client, { expand: ['crmCompany'] })) as {
+      deals: Record<string, unknown>[]
+    }
+    expect(result.deals[0]).toHaveProperty('crmCompany')
+    expect(result.deals[0]).not.toHaveProperty('contact')
+  })
+
+  it('does not forward expand as a list_deals query param', async () => {
+    const call = await callTool('list_deals', { expand: ['owner'] }, {})
+    expect(call.options.query).not.toHaveProperty('expand')
   })
 
   it('keeps scheduling tools on the versioned base', async () => {

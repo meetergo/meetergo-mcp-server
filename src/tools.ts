@@ -116,6 +116,28 @@ const WEBHOOK_EVENTS = [
   'signature_completed',
 ] as const
 
+/** A contact's part on a deal, beyond the single primary contactId. */
+const DEAL_CONTACT_ROLES = [
+  'primary',
+  'decision_maker',
+  'influencer',
+  'user',
+  'other',
+] as const
+
+/**
+ * The nested objects list_deals embeds per deal. Each one roughly doubles the
+ * response size on a workspace with real contact/company records, so they are
+ * stripped by default and restored only on request via `expand`.
+ */
+const DEAL_EMBEDDED_FIELDS = ['crmCompany', 'contact', 'stage', 'owner', 'contacts'] as const
+
+const COMPANY_SIZES = ['1-10', '11-50', '51-200', '201-500', '501-1000', '1001+'] as const
+
+const COMMUNICATION_TYPES = ['whatsapp', 'email', 'call', 'sms'] as const
+const COMMUNICATION_DIRECTIONS = ['inbound', 'outbound'] as const
+const COMMUNICATION_OUTCOMES = ['connected', 'no_answer', 'voicemail', 'busy'] as const
+
 /** Current channels. The enum also carries deprecated Skype/Teams v1 values. */
 const MEETING_CHANNELS = [
   'local',
@@ -327,7 +349,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'get_me',
     title: 'Get the authenticated user',
     description:
-      'Return the authenticated account and, when available, its plan tier and relevant caps. This is a low-cost authentication check that distinguishes a bad token from an empty calendar. Plan data explains action-specific limits; it does not gate the connection itself.',
+      'Return the authenticated account and, when available, its plan tier and relevant caps. This is a low-cost authentication check that distinguishes a bad token from an empty calendar. Plan data explains action-specific limits; it does not gate the connection itself. The account does not change within a session — call this once and reuse the id, name and email rather than calling it again.',
     schema: {},
     readOnly: true,
     run: async (client) => {
@@ -700,9 +722,16 @@ export const TOOLS: ToolDefinition[] = [
     name: 'search_contacts',
     title: 'Search CRM contacts',
     description:
-      'Search the CRM by name, email, phone or tag. Results expose contactIds and support duplicate checks before contact creation.',
+      'Search the CRM by name, email, phone or tag. Results expose contactIds and support duplicate checks before contact creation. searchTerm is a substring match, so a partial email can return contacts you did not mean to match; pass email instead when you have a full address and want only an exact match.',
     schema: {
       searchTerm: z.string().optional().describe('Matches name, email or phone'),
+      email: z
+        .string()
+        .email()
+        .optional()
+        .describe(
+          'Exact, case-insensitive email match for duplicate checks — takes precedence over searchTerm. Only the first page of the underlying search is checked, so a generic address (e.g. info@) that has more matches than fit on one page can still miss the one you want; narrow with tags or ownerId if that happens.',
+        ),
       tags: z.array(z.string()).optional(),
       ownerId: z.string().optional().describe('Filter by account owner'),
       sortBy: z.enum(['firstName', 'lastName', 'email', 'createdAt']).optional(),
@@ -711,8 +740,28 @@ export const TOOLS: ToolDefinition[] = [
       limit: z.number().int().min(1).max(100).optional(),
     },
     readOnly: true,
-    run: (client, args) =>
-      client.request('GET', '/crm', { query: args, root: true }),
+    run: async (client, args) => {
+      const { email, ...rest } = args
+      if (!email) {
+        return client.request('GET', '/crm', { query: rest, root: true })
+      }
+      const result = (await client.request('GET', '/crm', {
+        query: { ...rest, searchTerm: email },
+        root: true,
+      })) as Record<string, unknown>
+      const target = email.toLowerCase()
+      const isExactMatch = (contact: unknown) =>
+        typeof (contact as { email?: unknown }).email === 'string' &&
+        (contact as { email: string }).email.toLowerCase() === target
+      if (Array.isArray(result.items)) {
+        return { ...result, items: result.items.filter(isExactMatch) }
+      }
+      if (Array.isArray(result.data)) {
+        return { ...result, data: result.data.filter(isExactMatch) }
+      }
+      if (Array.isArray(result)) return result.filter(isExactMatch)
+      return result
+    },
   },
   {
     name: 'get_contact',
@@ -741,7 +790,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'create_contact',
     title: 'Create a contact',
     description:
-      'Create a CRM contact. Either email or phoneNumber is required. Existing contacts are not deduplicated.',
+      'Create a CRM contact. Either email or phoneNumber is required. Existing contacts are not deduplicated. Pass crmCompanyId to link the contact to an existing CRM company.',
     schema: {
       firstName: z.string().optional(),
       lastName: z.string().optional(),
@@ -750,6 +799,7 @@ export const TOOLS: ToolDefinition[] = [
       tags: z.array(z.string()).optional().describe('e.g. ["Lead", "Enterprise"]'),
       notes: z.string().optional().describe('Internal notes, not visible to the contact'),
       accountOwnerId: z.string().optional(),
+      crmCompanyId: z.string().optional(),
     },
     readOnly: false,
     run: async (client, args) => {
@@ -766,7 +816,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'update_contact',
     title: 'Update a contact',
     description:
-      'Update a CRM contact. Only supplied fields change. Tags replace the existing list rather than merging, so retained tags must be included.',
+      'Update a CRM contact. Only supplied fields change. Tags replace the existing list rather than merging, so retained tags must be included. Pass crmCompanyId to link to a company, or null to remove the link.',
     schema: {
       contactId: z.string(),
       firstName: z.string().optional(),
@@ -776,6 +826,7 @@ export const TOOLS: ToolDefinition[] = [
       tags: z.array(z.string()).optional(),
       notes: z.string().optional(),
       accountOwnerId: z.string().optional(),
+      crmCompanyId: z.string().nullable().optional(),
     },
     readOnly: false,
     // Tags replace rather than merge — a careless call silently drops data.
@@ -1125,7 +1176,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'list_data_fields',
     title: 'List data fields',
     description:
-      'List the reusable form fields shared across routing forms, including fields that may already match a planned addition. Returns 50 at a time with offset pagination.',
+      "List the reusable form fields shared across routing forms, including fields that may already match a planned addition. Each field's `name` is the exact key any `customFields` write elsewhere expects — match the field by its `label` here, then write using its `name`. Returns 50 at a time with offset pagination.",
     schema: { limit: listLimit, offset: listOffset },
     readOnly: true,
     run: (client, query) => client.request('GET', '/data-field', { query }),
@@ -1197,6 +1248,397 @@ export const TOOLS: ToolDefinition[] = [
     destructive: true,
     run: (client, { contactId }) =>
       client.request('DELETE', `/crm/${contactId}`, { root: true }),
+  },
+
+  // ---- Deals ----------------------------------------------------------------
+  {
+    name: 'list_pipelines',
+    title: 'List pipelines',
+    description:
+      'List sales pipelines and their stages, each with an id, order, colour and whether it counts as won or lost. A valid stageId from here is required to create or move a deal.',
+    schema: {},
+    readOnly: true,
+    run: (client) => client.request('GET', '/crm/pipelines', { root: true }),
+  },
+  {
+    name: 'list_deals',
+    title: 'List deals',
+    description:
+      'Search and filter deals by pipeline, stage, contact, company, owner or a name match. isOpen, isWon and isLost filter by outcome; paginated with page and limit. Each deal comes back without its embedded company, contact, stage, owner and contact-list objects — pass expand to add specific ones back when you need more than the ids.',
+    schema: {
+      search: z.string().optional().describe('Matches the deal name'),
+      pipelineId: z.string().optional(),
+      stageId: z.string().optional(),
+      ownerId: z.string().optional(),
+      contactId: z.string().optional(),
+      crmCompanyId: z.string().optional(),
+      isOpen: z.boolean().optional(),
+      isWon: z.boolean().optional(),
+      isLost: z.boolean().optional(),
+      page: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).optional(),
+      sortBy: z.string().optional(),
+      sortOrder: z.enum(['ASC', 'DESC']).optional(),
+      expand: z
+        .array(z.enum(DEAL_EMBEDDED_FIELDS))
+        .optional()
+        .describe(
+          'Which embedded objects to keep on each deal (crmCompany, contact, stage, owner, contacts). Omitted ones are stripped to keep the response small.',
+        ),
+    },
+    readOnly: true,
+    run: async (client, args) => {
+      const { expand, ...query } = args
+      const result = (await client.request('GET', '/crm/deals', {
+        query,
+        root: true,
+      })) as Record<string, unknown>
+      const keep = new Set(expand ?? [])
+      const strip = DEAL_EMBEDDED_FIELDS.filter((field) => !keep.has(field))
+      if (!Array.isArray(result.deals) || strip.length === 0) return result
+      return {
+        ...result,
+        deals: result.deals.map((deal: Record<string, unknown>) => {
+          const trimmed = { ...deal }
+          for (const field of strip) delete trimmed[field]
+          return trimmed
+        }),
+      }
+    },
+  },
+  {
+    name: 'get_deal',
+    title: 'Get a deal',
+    description:
+      'Return a full deal record, including its linked contact, company, stage and owner.',
+    schema: { dealId: z.string() },
+    readOnly: true,
+    run: (client, { dealId }) =>
+      client.request('GET', `/crm/deals/${dealId}`, { root: true }),
+  },
+  {
+    name: 'create_deal',
+    title: 'Create a deal',
+    description:
+      'Create a deal in a pipeline. Requires a name, pipelineId and a stageId that belongs to that pipeline — read the pipelines first to find valid ids. Optionally links a contact, a company and an owner.',
+    schema: {
+      name: z.string().max(255),
+      pipelineId: z.string(),
+      stageId: z.string().describe('Must belong to pipelineId'),
+      value: z.number().optional(),
+      currency: z.string().max(10).optional().describe('e.g. EUR, USD'),
+      expectedCloseDate: z.string().optional().describe('ISO 8601 date'),
+      notes: z.string().max(10000).optional(),
+      crmCompanyId: z.string().optional(),
+      contactId: z.string().optional(),
+      ownerId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          'Account owner. Omit to default to the creating user; pass null to create the deal with no owner at all.',
+        ),
+      contacts: z
+        .array(
+          z.object({
+            contactId: z.string(),
+            role: z.enum(DEAL_CONTACT_ROLES).optional(),
+            isPrimary: z.boolean().optional(),
+          }),
+        )
+        .optional()
+        .describe('Contacts on the deal beyond contactId, each with a role'),
+      customFields: z.record(z.unknown()).optional(),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/deals', { body, root: true }),
+  },
+  {
+    name: 'update_deal',
+    title: 'Update a deal',
+    description:
+      'Change a deal. Only supplied fields change. Passing null for contactId, crmCompanyId, expectedCloseDate or ownerId clears that field. Move the deal to another stage in its own pipeline with stageId.',
+    schema: {
+      dealId: z.string(),
+      name: z.string().max(255).optional(),
+      value: z.number().optional(),
+      currency: z.string().max(10).optional(),
+      expectedCloseDate: z.string().nullable().optional(),
+      notes: z.string().max(10000).optional(),
+      crmCompanyId: z.string().nullable().optional(),
+      contactId: z.string().nullable().optional(),
+      stageId: z.string().optional(),
+      ownerId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('null clears the account owner, leaving the deal unassigned'),
+      customFields: z.record(z.unknown()).optional(),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}`, { body, root: true }),
+  },
+  {
+    name: 'delete_deal',
+    title: 'Delete a deal',
+    description:
+      'Permanently delete a deal. Its activity history and stage changes are gone with it.',
+    schema: { dealId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { dealId }) =>
+      client.request('DELETE', `/crm/deals/${dealId}`, { root: true }),
+  },
+  {
+    name: 'mark_deal_won',
+    title: 'Mark a deal as won',
+    description:
+      "Close a deal as won and move it to a won-flagged stage in its pipeline. Pass wonStageId to pick a specific one when the pipeline has more than one; omit it to use the pipeline's default.",
+    schema: {
+      dealId: z.string(),
+      wonStageId: z
+        .string()
+        .optional()
+        .describe('A stage in the deal’s own pipeline with isWon set'),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/won`, { body, root: true }),
+  },
+  {
+    name: 'mark_deal_lost',
+    title: 'Mark a deal as lost',
+    description:
+      'Close a deal as lost. lostReason is a free-form key rather than a fixed list, since each company configures its own reasons; whether one is required is a per-company setting.',
+    schema: {
+      dealId: z.string(),
+      lostReason: z.string().max(64).optional(),
+      lostReasonNote: z.string().max(1000).optional(),
+      lostStageId: z
+        .string()
+        .optional()
+        .describe('A stage in the deal’s own pipeline with isLost set'),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/lost`, { body, root: true }),
+  },
+  {
+    name: 'reopen_deal',
+    title: 'Reopen a deal',
+    description:
+      'Reopen a deal previously closed as won or lost, clearing that outcome. Pass stageId to land it on a specific stage in its pipeline; omit it to use the default for reopened deals.',
+    schema: {
+      dealId: z.string(),
+      stageId: z.string().optional(),
+    },
+    readOnly: false,
+    run: (client, { dealId, ...body }) =>
+      client.request('PATCH', `/crm/deals/${dealId}/reopen`, {
+        body,
+        root: true,
+      }),
+  },
+  {
+    name: 'get_deal_activity',
+    title: "Get a deal's activity log",
+    description:
+      'Return the stage-change and field-update history for a deal, most recent first. Read-only: entries are written by the API itself, not by a tool call.',
+    schema: {
+      dealId: z.string(),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('Max entries. Defaults to 50.'),
+    },
+    readOnly: true,
+    run: (client, { dealId, limit }) =>
+      client.request('GET', `/crm/deals/${dealId}/activity`, {
+        query: { limit: limit ?? 50 },
+        root: true,
+      }),
+  },
+
+  // ---- Companies ------------------------------------------------------------
+  {
+    name: 'list_companies',
+    title: 'List companies',
+    description:
+      'Search and filter CRM companies by name, industry, size or owner; paginated with page and limit.',
+    schema: {
+      search: z.string().optional().describe('Matches the company name'),
+      industry: z.string().optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      ownerId: z.string().optional(),
+      page: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).optional(),
+      sortBy: z.string().optional(),
+      sortOrder: z.enum(['ASC', 'DESC']).optional(),
+    },
+    readOnly: true,
+    run: (client, args) =>
+      client.request('GET', '/crm/companies', { query: args, root: true }),
+  },
+  {
+    name: 'get_company',
+    title: 'Get a company',
+    description: 'Return a full CRM company record, including its owner and deal/contact counts.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}`, { root: true }),
+  },
+  {
+    name: 'create_company',
+    title: 'Create a company',
+    description:
+      'Create a CRM company. Only name is required; link it to contacts and deals afterwards via their crmCompanyId.',
+    schema: {
+      name: z.string().max(255),
+      domain: z.string().max(255).optional(),
+      industry: z.string().max(100).optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      website: z.string().max(500).optional(),
+      phoneNumber: z.string().max(50).optional(),
+      addressLine1: z.string().max(255).optional(),
+      addressLine2: z.string().max(255).optional(),
+      addressCity: z.string().max(100).optional(),
+      addressZip: z.string().max(20).optional(),
+      addressCountry: z.string().max(100).optional(),
+      notes: z.string().max(10000).optional(),
+      ownerId: z.string().optional(),
+      customFields: z
+        .record(z.unknown())
+        .optional()
+        .describe('Keyed by field key from list_data_fields'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/companies', { body, root: true }),
+  },
+  {
+    name: 'update_company',
+    title: 'Update a company',
+    description:
+      'Update an existing company. All fields optional; only supplied fields change. Pass ownerId: null to remove the owner. customFields is a patch: a key sent as null is removed, keys left out are untouched.',
+    schema: {
+      crmCompanyId: z.string(),
+      name: z.string().max(255).optional(),
+      domain: z.string().max(255).optional(),
+      industry: z.string().max(100).optional(),
+      size: z.enum(COMPANY_SIZES).optional(),
+      website: z.string().max(500).optional(),
+      phoneNumber: z.string().max(50).optional(),
+      addressLine1: z.string().max(255).optional(),
+      addressLine2: z.string().max(255).optional(),
+      addressCity: z.string().max(100).optional(),
+      addressZip: z.string().max(20).optional(),
+      addressCountry: z.string().max(100).optional(),
+      notes: z.string().max(10000).optional(),
+      ownerId: z.string().nullable().optional(),
+      customFields: z
+        .record(z.unknown().nullable())
+        .optional()
+        .describe('Keyed by field key from list_data_fields; null removes a key'),
+    },
+    readOnly: false,
+    run: (client, { crmCompanyId, ...body }) =>
+      client.request('PATCH', `/crm/companies/${crmCompanyId}`, { body, root: true }),
+  },
+  {
+    name: 'delete_company',
+    title: 'Delete a company',
+    description:
+      'Permanently delete a CRM company. Contacts and deals that referenced it keep existing but lose the link.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('DELETE', `/crm/companies/${crmCompanyId}`, { root: true }),
+  },
+  {
+    name: 'get_company_by_domain',
+    title: 'Find a company by domain',
+    description: 'Look up a CRM company by its website domain, e.g. for de-duplication before creating a new one.',
+    schema: { domain: z.string() },
+    readOnly: true,
+    run: (client, { domain }) =>
+      client.request('GET', `/crm/companies/by-domain/${domain}`, { root: true }),
+  },
+  {
+    name: 'get_company_contacts',
+    title: "Get a company's contacts",
+    description: 'List the CRM contacts linked to a company.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}/contacts`, { root: true }),
+  },
+  {
+    name: 'get_company_deals',
+    title: "Get a company's deals",
+    description: 'List the deals linked to a company, across every pipeline.',
+    schema: { crmCompanyId: z.string() },
+    readOnly: true,
+    run: (client, { crmCompanyId }) =>
+      client.request('GET', `/crm/companies/${crmCompanyId}/deals`, { root: true }),
+  },
+  {
+    name: 'get_company_summary',
+    title: 'Get company summary',
+    description:
+      'Aggregate CRM company counts and pipeline value, grouped by industry and by size band. Optionally scoped to one owner.',
+    schema: { ownerId: z.string().optional() },
+    readOnly: true,
+    run: (client, args) =>
+      client.request('GET', '/crm/companies/summary', { query: args, root: true }),
+  },
+
+  // ---- Communications -------------------------------------------------------
+  {
+    name: 'get_deal_communications',
+    title: "Get a deal's communications",
+    description:
+      'Return all logged communications for a deal (WhatsApp, email, call, SMS), ordered by occurredAt.',
+    schema: { dealId: z.string() },
+    readOnly: true,
+    run: (client, { dealId }) =>
+      client.request('GET', `/crm/deals/${dealId}/communications`, { root: true }),
+  },
+  {
+    name: 'create_communication',
+    title: 'Log a communication',
+    description:
+      'Log a communication on a deal: a WhatsApp message, email, call or SMS.',
+    schema: {
+      dealId: z.string(),
+      type: z.enum(COMMUNICATION_TYPES),
+      direction: z.enum(COMMUNICATION_DIRECTIONS),
+      body: z.string(),
+      occurredAt: z.string().describe('ISO 8601'),
+      contactId: z.string().optional(),
+      crmCompanyId: z.string().optional(),
+      subject: z.string().optional(),
+      outcome: z.enum(COMMUNICATION_OUTCOMES).optional().describe('Only meaningful for calls'),
+    },
+    readOnly: false,
+    run: (client, body) =>
+      client.request('POST', '/crm/communications', { body, root: true }),
+  },
+  {
+    name: 'delete_communication',
+    title: 'Delete a communication',
+    description: 'Permanently delete a logged communication entry.',
+    schema: { communicationId: z.string() },
+    readOnly: false,
+    destructive: true,
+    run: (client, { communicationId }) =>
+      client.request('DELETE', `/crm/communications/${communicationId}`, { root: true }),
   },
 
   // ---- Webhooks -----------------------------------------------------------
