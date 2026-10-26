@@ -220,7 +220,7 @@ export class MeetergoClient {
   }
 
   async request<T>(
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
@@ -320,6 +320,13 @@ export class MeetergoClient {
             `${this.dashboardUrl}/admin/subscription?feature=${encodeURIComponent(feature)}&utm_source=mcp`,
           )
         }
+        // A bare "Forbidden resource" is the API's answer to a role or plan
+        // wall (queues and handoff need Round Robin/Handoff, templates need
+        // their own feature). Say so, or it reads as a broken token.
+        if (response.status === 403 && /^forbidden resource$/i.test(message.trim())) {
+          message +=
+            ' — the role or plan of this account does not allow this. company.featureAccess in the account data shows what the plan includes (e.g. roundRobin, handoff, meetingTypeTemplates).'
+        }
         throw new MeetergoApiError(
           response.status,
           message || response.statusText,
@@ -344,7 +351,15 @@ export class MeetergoClient {
       }
 
       if (!text) return undefined as T
-      return JSON.parse(text) as T
+      try {
+        return JSON.parse(text) as T
+      } catch (error) {
+        // A few endpoints answer with a bare string (the personal-page link is
+        // a URL sent as text/plain). Only a JSON content type makes unparsable
+        // text a real error.
+        if (!/json/i.test(response.headers.get('content-type') ?? '')) return text as T
+        throw error
+      }
     }
 
     // Unreachable: the final attempt either returns or throws above.

@@ -30,6 +30,42 @@ function client(overrides: Partial<{ token: string; userId: string; baseUrl: str
   return new MeetergoClient({ token: 'rgo-test', ...overrides })
 }
 
+describe('403 from a plan or role wall', () => {
+  it('explains a bare Forbidden resource, and leaves other 403 messages alone', async () => {
+    const wall = new Response(JSON.stringify({ statusCode: 403, message: 'Forbidden resource' }), { status: 403 })
+    const addon = new Response(JSON.stringify({ message: 'WhatsApp messaging is not enabled for this account.' }), { status: 403 })
+    const stub = stubFetch([wall, addon])
+    try {
+      await expect(client().request('GET', '/queue/company')).rejects.toThrow(/featureAccess/)
+      await expect(client().request('GET', '/whatsapp/senders')).rejects.toThrow(/^meetergo API 403: WhatsApp messaging is not enabled for this account\.$/)
+    } finally {
+      stub.restore()
+    }
+  })
+})
+
+describe('non-JSON responses', () => {
+  it('returns a text/plain body as a string, as the personal-page link endpoint sends it', async () => {
+    const stub = stubFetch([
+      new Response('https://my.meetergo.com/p/x', { status: 200, headers: { 'content-type': 'text/plain' } }),
+    ])
+    try {
+      await expect(client().request('GET', '/booking-link/personal-page/link')).resolves.toBe('https://my.meetergo.com/p/x')
+    } finally {
+      stub.restore()
+    }
+  })
+
+  it('still fails on a body that claims to be JSON but is not', async () => {
+    const stub = stubFetch([new Response('<html>', { status: 200, headers: { 'content-type': 'application/json' } })])
+    try {
+      await expect(client().request('GET', '/x')).rejects.toThrow()
+    } finally {
+      stub.restore()
+    }
+  })
+})
+
 describe('parseRetryAfter', () => {
   it('reads a delay in seconds', () => {
     expect(parseRetryAfter('2')).toBe(2000)
