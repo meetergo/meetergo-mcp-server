@@ -25,17 +25,13 @@
  * the structured mirror.
  */
 import { z } from 'zod'
-
-const str = z.string().nullable().optional()
-const bool = z.boolean().nullable().optional()
-const num = z.number().nullable().optional()
-const any = (description: string) => z.unknown().optional().describe(description)
-const record = z.object({}).passthrough()
-const list = <T extends z.ZodTypeAny>(item: T) => z.array(item).nullable().optional()
-
-function out(shape: z.ZodRawShape, description: string) {
-  return z.object(shape).passthrough().describe(description)
-}
+import { any, bool, list, num, numOrStr, out, record, str } from './output-helpers.js'
+import { DOCS_OUTPUTS } from './tools-docs.js'
+import { AVAILABILITY_OUTPUTS } from './tools-availability.js'
+import { SPACES_OUTPUTS } from './tools-spaces.js'
+import { ENGAGEMENT_OUTPUTS } from './tools-engagement.js'
+import { BOOKING_SETUP_OUTPUTS } from './tools-booking-setup.js'
+import { INVOICING_OUTPUTS } from './tools-invoicing.js'
 
 const ok = out(
   {
@@ -113,9 +109,320 @@ const contact = out(
     tags: list(z.unknown()),
     notes: str,
     accountOwnerId: str,
+    crmCompanyId: str,
+    language: str.describe('ISO 639-1, e.g. de'),
+    address: record.nullable().optional(),
+    title: str.describe('Research-suggested until a person edits it'),
+    employer: str,
+    seniority: str,
+    function: str,
+    location: str,
+    additionalData: record.nullable().optional().describe('Custom field values, keyed by name from list_data_fields'),
     createdAt: str,
   },
   'A CRM contact',
+)
+
+const contactSummary = out(
+  {
+    contactId: str,
+    firstName: str,
+    lastName: str,
+    email: str,
+    phoneNumber: str,
+    crmCompanyId: str,
+  },
+  'A compact contact reference within a duplicate group',
+)
+
+const duplicateContactGroup = out(
+  {
+    reason: str.describe('email, phone or name'),
+    key: str.describe('The normalized value the group matched on'),
+    contacts: list(contactSummary),
+  },
+  'Contacts that share a normalized email, phone or name',
+)
+
+const quietDeal = out(
+  {
+    dealId: str,
+    dealName: str,
+    value: num,
+    currency: str,
+    pipelineId: str,
+    stageId: str,
+    enteredStageAt: str,
+    isRotting: bool,
+    daysSinceLastActivity: num,
+    healthBand: str,
+    followUpsSinceLastReply: num,
+    contactId: str,
+    contactFirstName: str,
+    contactLastName: str,
+    contactEmail: str,
+    crmCompanyId: str,
+    contactSourceType: numOrStr.describe(
+      'Read from the contact additionalData key named by contactSourceField; null until that custom data field exists on the account',
+    ),
+  },
+  'An open deal that has gone quiet, with its server-computed health signal',
+)
+
+const pipelineStage = out(
+  {
+    id: str,
+    name: str,
+    color: str,
+    order: num,
+    isWon: bool,
+    isLost: bool,
+    winProbability: num,
+    rottingDays: num,
+    requiredCustomFields: list(z.string()),
+    pipelineId: str,
+    salesMilestone: str.describe('start, demo or offer, when set — feeds the Sales Learning report'),
+  },
+  'A stage within a pipeline',
+)
+
+const pipeline = out(
+  {
+    id: str.describe('The pipelineId other tools take'),
+    name: str,
+    isDefault: bool,
+    companyId: str,
+    stages: list(pipelineStage),
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A sales pipeline with its stages',
+)
+
+const dealSignal = out(
+  {
+    healthScore: num,
+    healthBand: str.describe('e.g. on_track'),
+    daysInStage: num,
+    daysSinceLastActivity: num,
+    daysSinceLastInbound: num,
+    daysSinceLastOutbound: num,
+    followUpsSinceLastReply: num,
+    hasReplyEver: bool,
+    inboundCount: num,
+    outboundCount: num,
+    meetingsBooked: num,
+    meetingsHeld: num,
+    openTaskCount: num,
+    overdueTaskCount: num,
+    computedAt: str,
+  },
+  'Server-computed deal health, attached to every deal read',
+)
+
+const dealContact = out(
+  {
+    id: str.describe('The dealContactId update_deal_contact/remove_deal_contact take'),
+    dealId: str,
+    contactId: str,
+    role: str.describe('primary, decision_maker, influencer, user or other'),
+    isPrimary: bool,
+    contact: record.nullable().optional(),
+    createdAt: str,
+  },
+  "One contact's link to a deal, with its role",
+)
+
+const deal = out(
+  {
+    id: str.describe('The dealId other tools take'),
+    name: str,
+    value: num,
+    currency: str,
+    expectedCloseDate: str,
+    notes: str,
+    crmCompanyId: str,
+    contactId: str,
+    pipelineId: str,
+    stageId: str,
+    ownerId: str,
+    companyId: str,
+    lostReason: str,
+    lostReasonNote: str,
+    wonAt: str,
+    lostAt: str,
+    enteredStageAt: str,
+    isRotting: bool,
+    customFields: record.nullable().optional(),
+    crmCompany: record.nullable().optional(),
+    contact: record.nullable().optional(),
+    stage: record.nullable().optional(),
+    owner: record.nullable().optional(),
+    contacts: list(record),
+    signal: dealSignal.nullable().optional(),
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM deal',
+)
+
+const company = out(
+  {
+    id: str.describe('The crmCompanyId other tools take'),
+    name: str,
+    domain: str,
+    industry: str,
+    size: str.describe('1-10, 11-50, 51-200, 201-500, 501-1000 or 1001+'),
+    website: str,
+    phoneNumber: str,
+    address: record.nullable().optional(),
+    notes: str,
+    ownerId: str,
+    companyId: str.describe('The meetergo tenant id owning this record, not the CRM company itself'),
+    customFields: record.nullable().optional(),
+    owner: record.nullable().optional(),
+    contactsCount: num,
+    dealsCount: num,
+    totalDealsValue: num,
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM company',
+)
+
+const communication = out(
+  {
+    id: str,
+    type: str.describe('whatsapp, email, call or sms'),
+    direction: str.describe('inbound or outbound'),
+    subject: str,
+    body: str,
+    durationSeconds: num,
+    outcome: str,
+    externalId: str,
+    dealId: str,
+    contactId: str,
+    crmCompanyId: str,
+    loggedById: str,
+    loggedByName: str,
+    occurredAt: str,
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A logged communication (WhatsApp, email, call or SMS) on a company, deal or contact',
+)
+
+const contactActivityItem = out(
+  {
+    id: str,
+    type: str.describe('meeting, email, form, note, task, communication or conversation'),
+    source: str,
+    occurredAt: str,
+    title: str,
+    summary: str,
+    direction: str,
+    status: str,
+    owner: record.nullable().optional(),
+    deal: record.nullable().optional(),
+    recordingSessionId: str.describe("This entry's meeting recording, when there is one"),
+  },
+  "One entry in a contact's unified activity timeline",
+)
+
+const crmEmail = out(
+  {
+    id: str.describe('The emailId get_email_body takes'),
+    externalMessageId: str,
+    threadId: str,
+    subject: str,
+    snippet: str,
+    fromEmail: str,
+    toEmails: list(z.string()),
+    direction: str,
+    sentAt: str,
+    provider: str,
+    contactId: str,
+    dealId: str,
+    providerUrl: str.describe('Deep link to open in Gmail or Outlook'),
+    createdAt: str,
+  },
+  'A synced email — header and preview only, no body',
+)
+
+const note = out(
+  {
+    id: str,
+    content: str,
+    isPinned: bool,
+    dealId: str,
+    contactId: str,
+    crmCompanyId: str,
+    authorId: str,
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A note logged against a company, contact or deal',
+)
+
+const task = out(
+  {
+    id: str.describe('The taskId other tools take'),
+    title: str,
+    description: str,
+    type: str.describe('e.g. call, follow_up, email or meeting'),
+    priority: str,
+    dueDate: str,
+    reminderAt: str,
+    completed: bool.describe('Set via complete_task/uncomplete_task, not update_task'),
+    completedAt: str,
+    assigneeId: str,
+    companyId: str.describe("The meetergo tenant's own account id, not the CRM company"),
+    crmCompanyId: str.describe('The linked CRM company, when set'),
+    dealId: str.describe('The linked deal, when set'),
+    contactId: str.describe('The linked contact, when set'),
+    isOverdue: bool,
+    crmCompany: record.nullable().optional(),
+    deal: record.nullable().optional(),
+    contact: record.nullable().optional(),
+    assignee: record.nullable().optional(),
+    createdAt: str,
+    updatedAt: str,
+  },
+  'A CRM task',
+)
+
+// Never observed populated during research — every company checked had an
+// empty attachments list — so the shape of a real entry is unconfirmed.
+const attachment = record.describe('An attachment on a company; fields unconfirmed, never seen populated')
+
+const customFieldDefinition = out(
+  {
+    id: str,
+    key: str.describe('The exact-case key to write under customFields'),
+    label: str,
+    type: str.describe('e.g. multiselect'),
+    required: bool,
+    options: list(z.string()).describe('Valid values, for a multiselect field'),
+    order: num,
+  },
+  'A custom field configured on CRM companies or deals',
+)
+
+const dealActivity = out(
+  {
+    id: str,
+    dealId: str,
+    activityType: str,
+    fromStageId: str,
+    fromStageName: str,
+    toStageId: str,
+    toStageName: str,
+    changedById: str.describe('Null when automation changed a deal with no owner'),
+    changedByName: str,
+    metadata: record.nullable().optional(),
+    changedAt: str,
+  },
+  'One deal activity or stage-change event',
 )
 
 const routingForm = out(
@@ -136,9 +443,9 @@ const routingForm = out(
 
 const dataField = out(
   {
-    id: str,
+    id: numOrStr,
     label: str,
-    name: str.describe('Internal key'),
+    name: str.describe('The exact key customFields expects when writing to this field'),
     fieldType: str,
     required: bool,
     options: any('Choices, for choice fields'),
@@ -349,7 +656,23 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
     },
     'A fresh single-use booking link',
   ),
-  search_contacts: listOf(contact, 'Matching CRM contacts'),
+  search_contacts: out(
+    {
+      result: list(contact),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated matching CRM contacts',
+  ),
+  find_duplicate_contacts: out(
+    {
+      totalContactsScanned: num,
+      duplicateGroups: list(duplicateContactGroup),
+    },
+    'Contacts grouped by likely duplicate, computed client-side',
+  ),
   get_contact: out(
     {
       ...contact.shape,
@@ -360,6 +683,15 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
   ),
   create_contact: contact,
   update_contact: contact,
+  set_contact_source_type: out(
+    {
+      contactId: str,
+      contactSourceField: str,
+      value: str,
+      fieldCreated: bool.describe('true when the backing custom data field had to be created on this call'),
+    },
+    'Result of tagging a contact with an account-defined source-type flag, provisioning the backing field if needed',
+  ),
   list_calendar_connections: listOf(
     out(
       { id: str, provider: str.describe('google, microsoft, caldav …'), email: str },
@@ -432,15 +764,233 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
   ),
   list_data_fields: listOf(dataField, 'Reusable form fields'),
   create_data_field: dataField,
+  update_data_field: dataField,
+  delete_data_field: ok,
+  get_data_field_usage: record.describe('Where this field is actually used; shape unconfirmed'),
+  reorder_data_fields: listOf(dataField, 'The fields in their new order'),
   bulk_create_contacts: out(
     {
-      items: any('Created contacts, when the API returns a plain list'),
-      created: any('Created contacts or their count'),
-      failed: any('Rows that were rejected, with the reason'),
+      created: num.describe('Newly inserted contacts'),
+      updated: num.describe('Existing contacts updated in place, only when updateExisting is true'),
+      skipped: num.describe('Existing/duplicate contacts left untouched'),
+      failed: num,
+      issues: list(record),
     },
-    'Result of the bulk import',
+    'Result counts from the bulk contact import',
   ),
   delete_contact: ok,
+  bulk_delete_contacts: out(
+    { requested: num, deleted: num, skipped: num },
+    'Counts from a bulk contact deletion',
+  ),
+  get_contact_timeline: out(
+    { items: list(contactActivityItem), nextCursor: str, hasMore: bool },
+    "A contact's unified activity timeline, cursor-paginated",
+  ),
+  get_contact_emails: out(
+    { data: list(crmEmail), total: num },
+    "A contact's synced emails, most recent first",
+  ),
+  get_deal_emails: out(
+    { data: list(crmEmail), total: num },
+    "A deal's synced emails, most recent first",
+  ),
+  get_email_body: out(
+    { html: str, text: str, attachments: list(record) },
+    'The full body of one synced email, fetched on demand',
+  ),
+  get_email_send_capability: out(
+    {
+      canSend: bool,
+      provider: str.describe('google, microsoft or imap'),
+    },
+    "Whether the current user's connected mailbox could send right now",
+  ),
+  list_pipelines: listOf(pipeline, 'Sales pipelines and their stages'),
+  create_pipeline: pipeline,
+  update_pipeline: pipeline,
+  delete_pipeline: ok,
+  add_pipeline_stage: pipelineStage,
+  update_pipeline_stage: pipelineStage,
+  delete_pipeline_stage: ok,
+  reorder_pipeline_stages: listOf(pipelineStage, 'The stages in their new order'),
+  list_deals: out(
+    {
+      deals: list(deal),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated deals',
+  ),
+  get_deal: deal,
+  create_deal: deal,
+  update_deal: deal,
+  add_deal_contact: dealContact,
+  update_deal_contact: dealContact,
+  remove_deal_contact: ok,
+  delete_deal: ok,
+  mark_deal_won: deal,
+  mark_deal_lost: deal,
+  reopen_deal: deal,
+  get_deal_activity: listOf(dealActivity, "A deal's activity log, most recent first"),
+  get_deal_appointments: listOf(record, "A deal's appointments; shape unconfirmed"),
+  get_deal_summary: out(
+    {
+      totalDeals: num,
+      totalValue: num,
+      weightedForecast: num,
+      openDeals: num,
+      wonDeals: num,
+      lostDeals: num,
+      currencies: list(record).describe('Deal counts by currency'),
+      displayCurrency: str.describe('Majority currency, for formatting the aggregate totals'),
+      byStage: list(record),
+    },
+    'Deal counts and value across the pipeline, grouped by stage',
+  ),
+  get_deal_limits: out(
+    { count: num, limit: num.describe('-1 means unlimited on the current plan') },
+    "The account's deal count against its plan limit",
+  ),
+  get_quiet_contacts: out(
+    {
+      totalOpenDealsScanned: num,
+      quietDeals: list(quietDeal),
+    },
+    'Open deals gone quiet, ranked by value, computed client-side',
+  ),
+  find_duplicate_deals: listOf(record, 'Deals that look like duplicates, each with a match score'),
+  get_deal_contact_suggestions: listOf(record, 'Contacts this deal is probably about'),
+  merge_deals: out(
+    {
+      dealId: str.describe('The surviving deal'),
+      mergedCount: any('Deals merged in'),
+      moved: record.nullable().optional().describe('Counts of records moved onto the survivor, by type'),
+    },
+    'Result of merging duplicate deals into the survivor',
+  ),
+  bulk_import_deals: out(
+    {
+      contactsCreated: num,
+      contactsUpdated: num,
+      contactsSkipped: num,
+      dealsCreated: num,
+      dealsSkipped: num.describe('Not created because the plan deal limit was reached'),
+      failed: num,
+      issues: list(record),
+    },
+    'Result counts from the bulk deal import',
+  ),
+  list_companies: out(
+    {
+      result: list(company),
+      companies: list(company),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated CRM companies',
+  ),
+  get_company: company,
+  create_company: company,
+  update_company: company,
+  delete_company: ok,
+  get_company_by_domain: company,
+  get_company_contacts: listOf(contact, 'Contacts linked to the company'),
+  get_company_deals: listOf(deal, 'Deals linked to the company'),
+  get_company_summary: out(
+    {
+      totalCompanies: num,
+      totalDealsValue: num,
+      companiesWithDeals: num,
+      byIndustry: list(record).describe('Company counts grouped by industry'),
+      bySize: list(record).describe('Company counts grouped by size band'),
+    },
+    'Company counts and pipeline value, grouped by industry and size',
+  ),
+  get_custom_field_definitions: out(
+    { fields: list(customFieldDefinition) },
+    'Custom field definitions for the record type',
+  ),
+  update_custom_field_definitions: out(
+    { fields: list(customFieldDefinition) },
+    'Custom field definitions after the replace',
+  ),
+  get_lost_reasons: out(
+    { reasons: list(record), required: bool },
+    'Selectable lost-deal reasons and whether picking one is required',
+  ),
+  update_lost_reasons: out(
+    { reasons: list(record), required: bool },
+    'Selectable lost-deal reasons after the replace',
+  ),
+  get_company_meeting_history: out(
+    {
+      meetings: num,
+      people: num,
+      firstMeetingAt: str,
+      lastMeetingAt: str,
+    },
+    'Meeting count and date range for a company',
+  ),
+  list_communications: listOf(communication, "Logged communications for the company, deal or contact"),
+  create_communication: communication,
+  update_communication: communication,
+  delete_communication: ok,
+  list_notes: listOf(note, 'Logged notes for the company, deal or contact'),
+  create_note: note,
+  update_note: note,
+  delete_note: ok,
+  list_attachments: listOf(attachment, 'Attachments on the company, deal or contact'),
+  list_tasks: out(
+    {
+      tasks: list(task),
+      total: any('Total matches'),
+      page: any('Current page'),
+      limit: any('Page size'),
+      totalPages: any('Total pages'),
+    },
+    'Paginated CRM tasks',
+  ),
+  get_task: task,
+  get_task_summary: out(
+    {
+      totalTasks: num,
+      completedTasks: num,
+      overdueTasks: num,
+      dueTodayTasks: num,
+      dueThisWeekTasks: num,
+      byType: list(record),
+      byPriority: list(record),
+    },
+    'Aggregate task counts, overall or for one assignee',
+  ),
+  list_overdue_tasks: listOf(task, 'Open tasks past their due date'),
+  list_upcoming_tasks: listOf(task, 'Open tasks due soon'),
+  list_company_tasks: listOf(task, "A company's tasks"),
+  create_task: task,
+  update_task: task,
+  complete_task: task,
+  uncomplete_task: task,
+  delete_task: ok,
+  log_personal_followup: out(
+    {
+      note: record.nullable().optional(),
+      task: record.nullable().optional(),
+      content: str.describe('The formatted note content actually logged'),
+      followUpDueDate: str,
+      taskCreated: bool.describe('false when the note was logged but the linked reminder task then failed'),
+      taskError: str.describe('Present only when taskCreated is false'),
+      suggestedTask: record
+        .nullable()
+        .optional()
+        .describe('Present only when taskCreated is false — pass this to the task-creation tool to complete the reminder'),
+    },
+    'A logged personal follow-up conversation, plus its linked reminder task',
+  ),
   list_webhooks: listOf(webhook, 'Webhook subscriptions of the company'),
   create_webhook: webhook,
   update_webhook: webhook,
@@ -574,6 +1124,12 @@ export const TOOL_OUTPUTS: Record<string, z.ZodObject<z.ZodRawShape>> = {
     },
     'Whether the page serves this account’s widget',
   ),
+  ...DOCS_OUTPUTS,
+  ...AVAILABILITY_OUTPUTS,
+  ...SPACES_OUTPUTS,
+  ...ENGAGEMENT_OUTPUTS,
+  ...BOOKING_SETUP_OUTPUTS,
+  ...INVOICING_OUTPUTS,
 }
 
 /**

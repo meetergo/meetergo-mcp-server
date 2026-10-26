@@ -35,7 +35,7 @@ interface BridgeEvent {
 }
 
 function loadWidget(html: string, legacyOutput?: unknown) {
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+  const script = html.match(/<script>([\s\S]*?)<\/script>/i)?.[1]
   if (!script) throw new Error('widget script not found')
 
   const elements = new Map<string, FakeElement>()

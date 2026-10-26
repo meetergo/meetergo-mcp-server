@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv'
 import type { MeetergoClient, RequestOptions } from '../client.js'
 import { buildServer } from '../server.js'
 import { deriveSetupStatus } from '../setup-status.js'
@@ -61,6 +62,18 @@ describe('tool output schemas', () => {
         parsed.success,
         `${tool.name}: ${parsed.success ? '' : parsed.error.message}`,
       ).toBe(true)
+    }
+  })
+
+  it('accepts a numeric data-field id, unlike the uuid strings every other id is', () => {
+    // Live bug: create_data_field/update_data_field threw "Expected string,
+    // received number at id" even though the write itself succeeded — every
+    // data-field id from the real API is numeric (295521, 297171, ...), not
+    // a uuid string like the rest of this API's ids.
+    for (const name of ['create_data_field', 'update_data_field', 'reorder_data_fields'] as const) {
+      const sample = name === 'reorder_data_fields' ? { items: [{ id: 297171 }] } : { id: 297171 }
+      const parsed = TOOL_OUTPUTS[name].safeParse(sample)
+      expect(parsed.success, `${name}: ${parsed.success ? '' : parsed.error.message}`).toBe(true)
     }
   })
 
@@ -136,6 +149,27 @@ describe('tool output schemas over the wire', () => {
         false,
       )
     }
+  })
+
+  it('serves schemas a strict, 2020-12-only client can compile', async () => {
+    // The vendored zod-to-json-schema converter the SDK's own tools/list
+    // handler uses stamps every schema with `$schema: draft-07`. Claude
+    // Desktop's MCP integration builds a default AjvJsonSchemaValidator
+    // (2020-12 only) to validate output before a tool call even runs, and
+    // Ajv configurations that only load the 2020-12 meta-schema refuse to
+    // compile a schema that names a different one — failing every tool
+    // with an outputSchema, not just the ones with an unusual shape.
+    const client = await connect({})
+    const { tools } = await client.listTools()
+    expect(tools).toHaveLength(TOOLS.length)
+
+    const validator = new AjvJsonSchemaValidator()
+    for (const tool of tools) {
+      expect(tool.outputSchema, tool.name).toBeDefined()
+      expect(() => validator.getValidator(tool.inputSchema), tool.name).not.toThrow()
+      expect(() => validator.getValidator(tool.outputSchema!), tool.name).not.toThrow()
+    }
+    expect(JSON.stringify(tools)).not.toContain('$schema')
   })
 
   it('advertises reviewer-ready titles and concrete input parameter types', async () => {
