@@ -6,7 +6,7 @@
  * distributions can never drift apart.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { MeetergoApiError, type MeetergoClient } from './client.js'
 import { PROMPTS } from './prompts.js'
 import { TOOL_OUTPUTS, toStructuredContent } from './tool-outputs.js'

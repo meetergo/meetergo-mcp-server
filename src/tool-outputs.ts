@@ -24,7 +24,7 @@
  * server wraps those. The text content keeps the raw shape — this affects only
  * the structured mirror.
  */
-import { z } from 'zod'
+import { z } from 'zod/v3'
 
 const str = z.string().nullable().optional()
 const bool = z.boolean().nullable().optional()

@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import type { MeetergoClient } from './client.js'
 import { fetchPublicUrl } from './safe-fetch.js'
 import { presentSchedulingResult } from './scheduling-result.js'
